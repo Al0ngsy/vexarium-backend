@@ -147,10 +147,17 @@ class AlpacaClient:
         try:
             req = NewsRequest(symbols=symbol, limit=limit)
             resp = self._news.get_news(req)
-            articles = resp.data if hasattr(resp, 'data') else (resp if isinstance(resp, list) else [])
+            # NewsSet.data is {"news": [News, ...]}
+            articles = []
+            if hasattr(resp, "data") and isinstance(resp.data, dict):
+                for lst in resp.data.values():
+                    if isinstance(lst, list):
+                        articles.extend(lst)
+            elif isinstance(resp, list):
+                articles = resp
             result = []
             for article in articles:
-                d = article.model_dump() if hasattr(article, 'model_dump') else dict(article)
+                d = article.model_dump() if hasattr(article, "model_dump") else dict(article)
                 result.append(d)
             return result
         except Exception as e:
