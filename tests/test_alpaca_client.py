@@ -216,7 +216,7 @@ class TestNews:
             id=1,
             model_dump=lambda: {"headline": "Hello"},
         )
-        client._news.get_news.return_value = SimpleNamespace(data=[article])
+        client._news.get_news.return_value = SimpleNamespace(data={"news": [article]})
 
         result = client.get_news("AAPL")
 
