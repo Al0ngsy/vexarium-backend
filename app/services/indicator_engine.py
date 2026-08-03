@@ -394,3 +394,27 @@ def create_default_engine() -> IndicatorEngine:
     engine.register(BollingerIndicator)
     engine.register(StochasticIndicator)
     return engine
+
+
+def create_pro_engine() -> IndicatorEngine:
+    """Return an engine with all free + pro indicators registered.
+
+    Reuses the same free-tier registry as :func:`create_default_engine` and
+    extends it with the 5 pro-tier indicators (ATR, ADX, OBV, VWAP, Ichimoku).
+    Imported lazily to avoid a circular import with the extended module.
+    """
+    from app.services.indicators.extended import (  # noqa: PLC0415
+        ADXIndicator,
+        ATRIndicator,
+        IchimokuIndicator,
+        OBVIndicator,
+        VWAPIndicator,
+    )
+
+    engine = create_default_engine()
+    engine.register(ATRIndicator)
+    engine.register(ADXIndicator)
+    engine.register(OBVIndicator)
+    engine.register(VWAPIndicator)
+    engine.register(IchimokuIndicator)
+    return engine
