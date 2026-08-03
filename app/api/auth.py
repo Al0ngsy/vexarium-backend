@@ -44,6 +44,12 @@ async def login(req: LoginRequest):
             return TokenResponse(access_token=token, tier=u["tier"])
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
+def set_tier(user_id: int, tier: str):
+    user = _users.get(user_id)
+    if user:
+        user["tier"] = tier
+
+
 @router.get("/me")
 async def me(token: str):
     payload = decode_token(token)
