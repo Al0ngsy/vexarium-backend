@@ -1,3 +1,6 @@
+import asyncio
+import io
+import threading
 import pandas as pd
 from datetime import datetime, timedelta, date
 from typing import Optional
@@ -11,7 +14,28 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
 from alpaca.trading.enums import ContractType
 from ..config import settings
+from .cache import (
+    cache_get, cache_set,
+    bars_key, quote_key, news_key,
+    CACHE_TTL_BARS, CACHE_TTL_QUOTE, CACHE_TTL_NEWS,
+)
 from .exceptions import AlpacaError, SymbolNotFoundError, SubscriptionRequiredError
+
+
+def _run_coro(coro):
+    """Run an async cache call whether or not an event loop is active."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # Running inside an event loop already: execute in a worker thread.
+    result = {}
+    def _worker():
+        result["value"] = asyncio.run(coro)
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    return result["value"]
 
 
 class AlpacaClient:
@@ -23,6 +47,15 @@ class AlpacaClient:
         self._trading = TradingClient(*creds, paper=settings.alpaca_paper)
 
     def get_stock_bars(self, symbol: str, days: int = 365) -> pd.DataFrame:
+        key = bars_key(symbol)
+        cached = _run_coro(cache_get(key))
+        if cached is not None:
+            try:
+                df = pd.read_json(io.StringIO(cached))
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    return df
+            except Exception:
+                pass
         try:
             req = StockBarsRequest(
                 symbol_or_symbols=symbol,
@@ -50,7 +83,9 @@ class AlpacaClient:
                     'volume': float(bar.volume) if bar.volume else 0.0,
                     'timestamp': bar.timestamp,
                 })
-            return pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
+            _run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+            return df
         except Exception as e:
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
@@ -58,18 +93,24 @@ class AlpacaClient:
             raise AlpacaError(f"Failed to fetch stock bars for {symbol}: {e}")
 
     def get_latest_quote(self, symbol: str) -> dict:
+        key = quote_key(symbol)
+        cached = _run_coro(cache_get(key))
+        if cached is not None:
+            return cached
         try:
             req = StockLatestQuoteRequest(symbol_or_symbols=symbol)
             resp = self._stock.get_stock_latest_quote(req)
             quote = resp.get(symbol) if isinstance(resp, dict) else resp
             if quote is None:
                 return {}
-            return {
+            result = {
                 'bid': float(getattr(quote, 'bid_price', 0) or 0),
                 'ask': float(getattr(quote, 'ask_price', 0) or 0),
                 'last_price': float(getattr(quote, 'bid_price', 0) or getattr(quote, 'ask_price', 0) or 0),
                 'timestamp': getattr(quote, 'timestamp', None),
             }
+            _run_coro(cache_set(key, result, ttl=CACHE_TTL_QUOTE))
+            return result
         except Exception as e:
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
@@ -144,6 +185,10 @@ class AlpacaClient:
             raise AlpacaError(f"Failed to fetch option snapshot for {symbol}: {e}")
 
     def get_news(self, symbol: str, limit: int = 10) -> list:
+        key = news_key(symbol)
+        cached = _run_coro(cache_get(key))
+        if cached is not None:
+            return cached
         try:
             req = NewsRequest(symbols=symbol, limit=limit)
             resp = self._news.get_news(req)
@@ -159,6 +204,7 @@ class AlpacaClient:
             for article in articles:
                 d = article.model_dump() if hasattr(article, "model_dump") else dict(article)
                 result.append(d)
+            _run_coro(cache_set(key, result, ttl=CACHE_TTL_NEWS))
             return result
         except Exception as e:
             raise AlpacaError(f"Failed to fetch news for {symbol}: {e}")
