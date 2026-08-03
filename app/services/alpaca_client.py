@@ -19,7 +19,7 @@ class AlpacaClient:
         creds = (settings.alpaca_api_key, settings.alpaca_secret_key)
         self._stock = StockHistoricalDataClient(*creds)
         self._option = OptionHistoricalDataClient(*creds)
-        self._news = NewsClient()
+        self._news = NewsClient(*creds)
         self._trading = TradingClient(*creds, paper=settings.alpaca_paper)
 
     def get_stock_bars(self, symbol: str, days: int = 365) -> pd.DataFrame:
