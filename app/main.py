@@ -15,6 +15,7 @@ from app.api.billing import router as billing_router
 from app.api.portfolio import router as portfolio_router
 from app.api.options import router as options_router
 from app.api.strategies import router as strategies_router
+from app.api.trades import router as trades_router
 from app.config import settings
 from app.middleware.logging import request_logging_middleware
 from app.middleware.rate_limit import get_limiter
@@ -64,6 +65,7 @@ app.include_router(billing_router, prefix="/api/v1")
 app.include_router(portfolio_router, prefix="/api/v1")
 app.include_router(options_router, prefix="/api/v1")
 app.include_router(strategies_router, prefix="/api/v1")
+app.include_router(trades_router, prefix="/api/v1")
 
 
 @app.get("/health")
