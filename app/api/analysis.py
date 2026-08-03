@@ -1,26 +1,32 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+
+from ..middleware.rate_limit import limiter
+from ..middleware.validation import validate_symbol
 from ..schemas.analysis import AnalysisRequest, AnalysisResponse, IndicatorResult, OverallVerdict
 from ..services.alpaca_client import AlpacaClient, AlpacaError
 from ..services.indicator_engine import create_default_engine
 from ..services.verdicts import aggregate
+from ..config import settings
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 
 @router.post("", response_model=AnalysisResponse)
-async def analyze(request: AnalysisRequest):
+@limiter.limit(f"{settings.rate_limit_free}/minute")
+async def analyze(request: Request, body: AnalysisRequest):
     try:
+        sym = validate_symbol(body.symbol)
         client = AlpacaClient()
-        df = client.get_stock_bars(request.symbol)
+        df = client.get_stock_bars(sym)
         if df.empty:
-            raise HTTPException(status_code=404, detail=f"No data found for symbol: {request.symbol}")
+            raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
         engine = create_default_engine()
         indicator_results = engine.compute_all(df)
         overall = aggregate(indicator_results)
         current_price = float(df.iloc[-1]["close"]) if not df.empty else None
         return AnalysisResponse(
-            symbol=request.symbol,
-            asset_type=request.asset_type,
+            symbol=sym,
+            asset_type=body.asset_type,
             current_price=current_price,
             overall=OverallVerdict(
                 overall_verdict=overall["overall_verdict"],
