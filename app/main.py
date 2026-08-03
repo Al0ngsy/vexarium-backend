@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
 from app.api.analysis import router as analysis_router
 from app.api.portfolio import router as portfolio_router
+from app.api.options import router as options_router
 from app.config import settings
 
 # --- Optional Sentry initialization ---
@@ -40,6 +41,7 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api/v1/health", tags=["health"])
 app.include_router(analysis_router, prefix="/api/v1")
 app.include_router(portfolio_router, prefix="/api/v1")
+app.include_router(options_router, prefix="/api/v1")
 
 
 @app.get("/health")
