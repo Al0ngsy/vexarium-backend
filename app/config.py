@@ -6,6 +6,7 @@ Loads from environment variables and/or a local .env file. Instantiate
 """
 from __future__ import annotations
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +41,9 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_expiry_hours: int = 24
 
+    # --- Environment ---
+    vexarium_env: str = "development"
+
     # --- Trading thresholds ---
     take_profit_threshold: float = 0.10
     cut_loss_threshold: float = -0.08
@@ -54,6 +58,12 @@ class Settings(BaseSettings):
         if not self.cors_origins:
             return []
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def _check_production_jwt(self):
+        if self.vexarium_env == "production" and self.jwt_secret == "change-me-in-production":
+            raise ValueError("jwt_secret must be set in production")
+        return self
 
 
 settings = Settings()

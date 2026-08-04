@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import threading
 import pandas as pd
 from datetime import datetime, timedelta, date
@@ -20,6 +21,8 @@ from .cache import (
     CACHE_TTL_BARS, CACHE_TTL_QUOTE, CACHE_TTL_NEWS,
 )
 from .exceptions import AlpacaError, SymbolNotFoundError, SubscriptionRequiredError
+
+logger = logging.getLogger('vexarium.alpaca')
 
 
 def _run_coro(coro):
@@ -87,10 +90,11 @@ class AlpacaClient:
             _run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
             return df
         except Exception as e:
+            logger.error("Alpaca get_stock_bars failed for %s: %s", symbol, e)
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
-            raise AlpacaError(f"Failed to fetch stock bars for {symbol}: {e}")
+            raise AlpacaError(f"Failed to fetch stock bars for {symbol}")
 
     def get_latest_quote(self, symbol: str) -> dict:
         key = quote_key(symbol)
@@ -112,10 +116,11 @@ class AlpacaClient:
             _run_coro(cache_set(key, result, ttl=CACHE_TTL_QUOTE))
             return result
         except Exception as e:
+            logger.error("Alpaca get_latest_quote failed for %s: %s", symbol, e)
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
-            raise AlpacaError(f"Failed to fetch latest quote for {symbol}: {e}")
+            raise AlpacaError(f"Failed to fetch latest quote for {symbol}")
 
     def get_option_contracts(
         self, underlying: str, expiration_gte: str, expiration_lte: str,
@@ -146,10 +151,11 @@ class AlpacaClient:
                 result.append(d)
             return result
         except Exception as e:
+            logger.error("Alpaca get_option_contracts failed for %s: %s", underlying, e)
             err_msg = str(e).lower()
             if 'subscription' in err_msg or 'permission' in err_msg:
-                raise SubscriptionRequiredError(f"Options data subscription required: {e}")
-            raise AlpacaError(f"Failed to fetch option contracts for {underlying}: {e}")
+                raise SubscriptionRequiredError(f"Options data subscription required for {underlying}")
+            raise AlpacaError(f"Failed to fetch option contracts for {underlying}")
 
     def get_option_snapshot(self, symbol: str) -> dict:
         try:
@@ -179,10 +185,11 @@ class AlpacaClient:
                 'ask': float(getattr(latest_quote, 'ask_price', 0) or 0) if latest_quote else 0.0,
             }
         except Exception as e:
+            logger.error("Alpaca get_option_snapshot failed for %s: %s", symbol, e)
             err_msg = str(e).lower()
             if 'subscription' in err_msg or 'permission' in err_msg:
-                raise SubscriptionRequiredError(f"Options data subscription required: {e}")
-            raise AlpacaError(f"Failed to fetch option snapshot for {symbol}: {e}")
+                raise SubscriptionRequiredError(f"Options data subscription required for {symbol}")
+            raise AlpacaError(f"Failed to fetch option snapshot for {symbol}")
 
     def get_news(self, symbol: str, limit: int = 10) -> list:
         key = news_key(symbol)
@@ -207,7 +214,11 @@ class AlpacaClient:
             _run_coro(cache_set(key, result, ttl=CACHE_TTL_NEWS))
             return result
         except Exception as e:
-            raise AlpacaError(f"Failed to fetch news for {symbol}: {e}")
+            logger.error("Alpaca get_news failed for %s: %s", symbol, e)
+            err_msg = str(e).lower()
+            if 'not found' in err_msg or 'invalid symbol' in err_msg:
+                raise SymbolNotFoundError(f"Symbol not found: {symbol}")
+            raise AlpacaError(f"Failed to fetch news for {symbol}")
 
     def get_market_calendar(self, start: str = None, end: str = None) -> list:
         try:
@@ -224,4 +235,5 @@ class AlpacaClient:
                 result.append(d)
             return result
         except Exception as e:
-            raise AlpacaError(f"Failed to fetch market calendar: {e}")
+            logger.error("Alpaca get_market_calendar failed: %s", e)
+            raise AlpacaError("Failed to fetch market calendar")

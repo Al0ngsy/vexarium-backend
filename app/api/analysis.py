@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 
+import logging
+
 from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
 from ..schemas.analysis import AnalysisRequest, AnalysisResponse, IndicatorResult, OverallVerdict

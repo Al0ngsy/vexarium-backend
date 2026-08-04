@@ -2,7 +2,7 @@ import re
 
 from fastapi import HTTPException
 
-SYMBOL_PATTERN = re.compile(r"^[A-Z^]{1,10}$")
+SYMBOL_PATTERN = re.compile(r"^[A-Z]{1,10}(\.[A-Z]{1,2})?$")
 
 
 def validate_symbol(symbol: str) -> str:

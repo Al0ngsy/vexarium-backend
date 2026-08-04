@@ -5,48 +5,46 @@ from cachetools import TTLCache
 from ..config import settings
 
 _ttl_cache = TTLCache(maxsize=1000, ttl=3600)
-_redis = None
-
-
-def _get_redis():
-    global _redis
-    if not settings.redis_url:
-        return None
-    if _redis is None:
-        import redis.asyncio as aioredis
-        _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
-    return _redis
 
 
 async def cache_get(key: str) -> Optional[Any]:
-    r = _get_redis()
-    if r:
+    if settings.redis_url:
+        import redis.asyncio as aioredis
+        client = aioredis.from_url(settings.redis_url, decode_responses=True)
         try:
-            val = await r.get(key)
+            val = await client.get(key)
             return json.loads(val) if val else None
         except Exception:
             return None
+        finally:
+            await client.aclose()
     return _ttl_cache.get(key)
 
 
 async def cache_set(key: str, value: Any, ttl: int = 3600) -> None:
-    r = _get_redis()
-    if r:
+    if settings.redis_url:
+        import redis.asyncio as aioredis
+        client = aioredis.from_url(settings.redis_url, decode_responses=True)
         try:
-            await r.set(key, json.dumps(value), ex=ttl)
+            await client.set(key, json.dumps(value), ex=ttl)
         except Exception:
             pass
+        finally:
+            await client.aclose()
         return
     _ttl_cache[key] = value
 
 
 async def cache_delete(key: str) -> None:
-    r = _get_redis()
-    if r:
+    if settings.redis_url:
+        import redis.asyncio as aioredis
+        client = aioredis.from_url(settings.redis_url, decode_responses=True)
         try:
-            await r.delete(key)
+            await client.delete(key)
         except Exception:
             pass
+        finally:
+            await client.aclose()
         return
     _ttl_cache.pop(key, None)
 
