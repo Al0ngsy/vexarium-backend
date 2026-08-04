@@ -32,19 +32,26 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
 async def analyze(prompt: str, skip_ai: bool = False) -> str:
     if skip_ai or not settings.llm_api_key:
         return "AI analysis unavailable. Review the technical indicators above. This is not financial advice."
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{settings.llm_base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                json={
-                    "model": settings.llm_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 300,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception:
-        return "AI analysis temporarily unavailable. Review the technical indicators above. This is not financial advice."
+    # The provider occasionally returns an empty completion; retry once.
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{settings.llm_base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                    json={
+                        "model": settings.llm_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 300,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                if content and content.strip():
+                    return content
+                # empty completion -> try again
+        except Exception:
+            if attempt == 1:
+                return "AI analysis temporarily unavailable. Review the technical indicators above. This is not financial advice."
+    return "AI analysis temporarily unavailable. Review the technical indicators above. This is not financial advice."
