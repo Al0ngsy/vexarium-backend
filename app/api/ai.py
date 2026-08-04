@@ -15,13 +15,17 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 logger = logging.getLogger("vexarium.api.ai")
 
 
-def _fetch_news_sentiment(client: AlpacaClient, symbol: str) -> dict:
+def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
+    """Fetch recent news. Returns (sentiment_summary, article_list). Never raises."""
     try:
         articles = client.get_news(symbol, limit=10)
-        return get_news_sentiment(articles)
+        return get_news_sentiment(articles), articles
     except Exception:
-        logger.error("News sentiment failed for %s", symbol, exc_info=True)
-        return {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."}
+        logger.error("News fetch failed for %s", symbol, exc_info=True)
+        return (
+            {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."},
+            [],
+        )
 
 
 @router.post("/ai")
@@ -36,8 +40,8 @@ async def ai_analysis(request: Request, body: AnalysisRequest):
         engine = create_default_engine()
         indicator_results = [r.to_dict() for r in engine.compute_all(df)]
         overall = aggregate(indicator_results)
-        news = _fetch_news_sentiment(client, sym)
-        prompt = build_prompt(indicator_results, overall, news_sentiment=news)
+        news, articles = _fetch_news(client, sym)
+        prompt = build_prompt(indicator_results, overall, news_sentiment=news, news_articles=articles)
         text = await llm_analyze(prompt)
         return {
             "symbol": sym,
@@ -45,6 +49,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest):
             "model": settings.llm_model,
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "news_sentiment": news,
+            "news_articles": articles[:8],
         }
     except Exception:
         logger.error("AI analysis failed", exc_info=True)

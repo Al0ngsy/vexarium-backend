@@ -15,7 +15,8 @@ Rules:
 - Be direct and clinical in tone."""
 
 def build_prompt(indicator_results: list, overall_verdict: dict,
-                 options_data: Optional[dict] = None, news_sentiment: Optional[dict] = None) -> str:
+                 options_data: Optional[dict] = None, news_sentiment: Optional[dict] = None,
+                 news_articles: Optional[list] = None) -> str:
     context = {
         "overall_verdict": overall_verdict.get("overall_verdict", "unknown"),
         "indicators": [
@@ -27,6 +28,18 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
         context["options"] = options_data
     if news_sentiment:
         context["news_sentiment"] = news_sentiment
+    if news_articles:
+        # Surface the actual headlines/summaries so the model can reason about them,
+        # not just the aggregate sentiment score.
+        context["news_articles"] = [
+            {
+                "headline": a.get("headline") or a.get("title", ""),
+                "source": a.get("source", ""),
+                "url": a.get("url", ""),
+                "summary": (a.get("summary") or "")[:400],
+            }
+            for a in news_articles[:8]
+        ]
     return f"{SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}\n\nProvide your analysis:"
 
 async def analyze(prompt: str, skip_ai: bool = False) -> str:

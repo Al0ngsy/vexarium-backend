@@ -56,6 +56,24 @@ def test_build_prompt_with_news():
     prompt = build_prompt(indicators, overall, news_sentiment=news)
     assert "sentiment_score" in prompt
 
+def test_build_prompt_with_news_articles():
+    indicators = [{"name": "RSI", "verdict": "buy", "value": 35}]
+    overall = {"overall_verdict": "buy", "score": 1, "indicator_count": 1, "breakdown": []}
+    news = {"sentiment_score": 0.5, "summary": "Positive news."}
+    articles = [
+        {"headline": "AAPL beats earnings, surges", "source": "Reuters", "url": "http://x/1", "summary": "Record quarter."},
+        {"headline": "AAPL launches new chip", "source": "Bloomberg", "url": "http://x/2", "summary": "Supply chain."},
+    ]
+    prompt = build_prompt(indicators, overall, news_sentiment=news, news_articles=articles)
+    assert "news_articles" in prompt
+    assert "AAPL beats earnings, surges" in prompt
+    assert "Reuters" in prompt
+    assert "Record quarter." in prompt
+    # More than 8 articles are capped.
+    many = [{"headline": f"h{i}", "source": "s", "url": "u", "summary": "m"} for i in range(12)]
+    prompt2 = build_prompt(indicators, overall, news_sentiment=news, news_articles=many)
+    assert prompt2.count('"headline"') == 8  # capped at 8
+
 @pytest.mark.asyncio
 async def test_analyze_skip_ai():
     result = await analyze("test prompt", skip_ai=True)
@@ -101,6 +119,9 @@ async def test_ai_endpoint_returns_analysis():
     ) as mock_llm:
         mock_instance = MockClient.return_value
         mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_news.return_value = [
+            {"headline": "AAPL beats earnings, surges", "source": "Reuters", "url": "http://x/1", "summary": "Record quarter."}
+        ]
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
@@ -109,4 +130,11 @@ async def test_ai_endpoint_returns_analysis():
             assert "analysis" in data
             assert data["symbol"] == "AAPL"
             assert mock_llm.called
+            # News articles are passed into the LLM prompt.
+            prompt_arg = mock_llm.call_args.args[0] if mock_llm.call_args.args else mock_llm.call_args.kwargs.get("prompt", "")
+            assert "news_articles" in prompt_arg
+            assert "AAPL beats earnings, surges" in prompt_arg
+            # Response surfaces the articles too.
+            assert "news_articles" in data
+            assert data["news_articles"][0]["headline"] == "AAPL beats earnings, surges"
 
