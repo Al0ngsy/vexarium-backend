@@ -16,7 +16,7 @@ from ..schemas.analysis import (
     PricePoint,
 )
 from ..services.alpaca_client import AlpacaClient, AlpacaError
-from ..services.indicator_engine import create_default_engine, create_pro_engine
+from ..services.indicator_engine import create_pro_engine
 from ..services.chart_series import build_price_series, compute_series_for, indicator_kind
 from ..middleware.tier_gating import require_tier
 from ..services.verdicts import aggregate
@@ -110,7 +110,8 @@ async def analyze(request: Request, body: AnalysisRequest):
         df = client.get_stock_bars(sym)
         if df.empty:
             raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
-        engine = create_default_engine()
+        # All indicators are free (no more free/pro indicator split).
+        engine = create_pro_engine()
         indicator_results = engine.compute_all(df)
         response = _build_response(sym, body, df, indicator_results)
         await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)

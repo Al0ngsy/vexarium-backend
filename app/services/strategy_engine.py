@@ -102,17 +102,59 @@ def compute_strategy(strategy_type, strike, premium, current_price, strike2=None
     raise ValueError(f"Unknown strategy: {strategy_type}")
 
 
-def recommend_strategies(sentiment, current_price, option_chain):
+def _direction_from_indicators(indicator_results) -> str:
+    """Derive a directional bias from technical indicators (not just the overall
+    verdict string). Returns 'bullish', 'bearish', or 'neutral'."""
+    if not indicator_results:
+        return 'neutral'
+    bullish = bearish = 0
+    for r in indicator_results:
+        v = str(r.get('verdict', '')).lower()
+        if v in ('strong_buy', 'buy'):
+            bullish += 1
+        elif v in ('strong_sell', 'sell'):
+            bearish += 1
+    net = bullish - bearish
+    if net >= 2:
+        return 'bullish'
+    if net <= -2:
+        return 'bearish'
+    return 'neutral'
+
+
+def _volatility_from_indicators(indicator_results) -> str:
+    """High/low volatility heuristic from indicators (ATR, Bollinger)."""
+    if not indicator_results:
+        return 'medium'
+    for r in indicator_results:
+        name = str(r.get('name', '')).upper()
+        if 'ATR' in name:
+            return 'high'  # ATR present and computed = use defined-risk framing
+    return 'medium'
+
+
+def recommend_strategies(sentiment, current_price, option_chain, indicator_results=None):
     if not option_chain:
         return []
     calls = [c for c in option_chain if str(c.get('type', '')).lower() == 'call']
     puts = [c for c in option_chain if str(c.get('type', '')).lower() == 'put']
     result = []
-    s = (sentiment or 'neutral').lower()
+    # Prefer indicator-derived direction, fall back to the passed sentiment string.
+    s = _direction_from_indicators(indicator_results)
+    if s == 'neutral':
+        s = (sentiment or 'neutral').lower()
+    s = s if s in ('bullish', 'bearish', 'neutral') else 'neutral'
+    # Volatility influences whether we lead with defined-risk spreads.
+    vol = _volatility_from_indicators(indicator_results)
     if s == 'bullish' and calls:
         c = calls[0]
-        result.append(compute_strategy('long_call', c['strike_price'], c.get('last_price', 0) or 0, current_price))
-        result.append(compute_strategy('cash_secured_put', c['strike_price'], c.get('last_price', 0) or 0, current_price))
+        if vol == 'high' and len(calls) > 1:
+            # High vol -> suggest a defined-risk bull call spread.
+            result.append(compute_strategy('bull_call_spread', c['strike_price'], c.get('last_price', 0) or 0, current_price,
+                                           strike2=calls[1]['strike_price'], debit=(c.get('last_price', 0) or 0)))
+        else:
+            result.append(compute_strategy('long_call', c['strike_price'], c.get('last_price', 0) or 0, current_price))
+            result.append(compute_strategy('cash_secured_put', c['strike_price'], c.get('last_price', 0) or 0, current_price))
     elif s == 'bearish' and puts:
         p = puts[0]
         result.append(compute_strategy('short_put', p['strike_price'], p.get('last_price', 0) or 0, current_price))

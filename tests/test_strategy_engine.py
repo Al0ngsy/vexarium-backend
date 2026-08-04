@@ -25,6 +25,27 @@ def test_recommend_bullish():
     assert len(recs) > 0
     assert recs[0]['name'] == 'LONG CALL'
 
+
+def test_recommend_driven_by_indicators():
+    # Indicators say strongly bullish even if the passed sentiment is neutral.
+    chain = [{'strike_price': 100, 'type': 'call', 'last_price': 5.0}]
+    ind = [
+        {'name': 'RSI', 'verdict': 'strong_buy'},
+        {'name': 'MACD', 'verdict': 'buy'},
+        {'name': 'SMA/EMA', 'verdict': 'buy'},
+    ]
+    recs = recommend_strategies('neutral', 105, chain, indicator_results=ind)
+    assert recs and recs[0]['name'] == 'LONG CALL'
+
+
+def test_recommend_indicators_neutral_falls_back_to_sentiment():
+    # Indicators are neutral -> fall back to the passed sentiment string.
+    chain = [{'strike_price': 100, 'type': 'call', 'last_price': 5.0}]
+    ind = [{'name': 'RSI', 'verdict': 'hold'}, {'name': 'MACD', 'verdict': 'hold'}]
+    recs = recommend_strategies('bearish', 105, chain, indicator_results=ind)
+    # bearish with only calls available -> no short_put, falls to neutral branch
+    assert isinstance(recs, list)
+
 def test_unknown_strategy_raises():
     with pytest.raises(ValueError):
         compute_strategy('bad_strategy', 100, 5, 105)

@@ -124,7 +124,13 @@ async def test_ai_endpoint_returns_analysis():
         ]
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
+            # AI is gated behind Pro tier: register a user and grant Pro.
+            from app.api.auth import _users, set_tier
+            from app.services.auth import create_access_token
+            _users.clear()
+            token = create_access_token(1, tier="pro")
+            _users[1] = {"id": 1, "email": "pro@test.dev", "password_hash": "x", "tier": "pro"}
+            resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"}, params={"token": token})
             assert resp.status_code == 200
             data = resp.json()
             assert "analysis" in data
@@ -137,4 +143,18 @@ async def test_ai_endpoint_returns_analysis():
             # Response surfaces the articles too.
             assert "news_articles" in data
             assert data["news_articles"][0]["headline"] == "AAPL beats earnings, surges"
+
+
+@pytest.mark.asyncio
+async def test_ai_endpoint_rejects_free_tier():
+    """AI analysis is a Pro feature — a free (anonymous) user gets 403."""
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.api.auth import _users
+    _users.clear()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
+        assert resp.status_code == 403
+        assert "Upgrade" in resp.json()["detail"]
 

@@ -3,6 +3,7 @@ from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
 from ..schemas.strategy import StrategiesResponse, StrategyCard, PayoffPoint
 from ..services.alpaca_client import AlpacaClient, AlpacaError
+from ..services.indicator_engine import create_pro_engine
 from ..services.strategy_engine import recommend_strategies, compute_strategy
 from ..config import settings
 
@@ -22,7 +23,12 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
                 'type': c.get('type', 'call'),
                 'last_price': float(c.get('last_price', 0) or 0),
             })
-        recs = recommend_strategies(sentiment, strike, chain)
+        # Compute the technical indicators and use them to drive strategy selection.
+        df = client.get_stock_bars(sym)
+        indicator_results = []
+        if not df.empty:
+            indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
+        recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
         cards = []
         for r in recs:
             curve = r.get('payoff_curve', []) or []
