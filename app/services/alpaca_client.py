@@ -8,7 +8,8 @@ from typing import Optional
 from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDataClient
 from alpaca.data.historical.news import NewsClient
 from alpaca.data.requests import (
-    StockBarsRequest, StockLatestQuoteRequest, OptionSnapshotRequest, NewsRequest
+    StockBarsRequest, StockLatestQuoteRequest, StockSnapshotRequest,
+    OptionSnapshotRequest, NewsRequest
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
@@ -121,6 +122,64 @@ class AlpacaClient:
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
             raise AlpacaError(f"Failed to fetch latest quote for {symbol}")
+
+    def get_market_snapshot(self, symbol: str, df: Optional[pd.DataFrame] = None) -> dict:
+        """Current market snapshot + price statistics for a symbol.
+
+        Combines the live quote/trade (Alpaca snapshot endpoint) with statistics
+        derived from the daily bars (52-week high/low, YTD change). Used to give
+        the AI richer company/market context. Never raises on partial data.
+        """
+        result: dict[str, Optional[float]] = {
+            'price': None, 'day_change_pct': None, 'bid': None, 'ask': None,
+            'prev_close': None, 'high_52w': None, 'low_52w': None, 'ytd_change_pct': None,
+        }
+        # 1. Live quote/trade from snapshot endpoint.
+        try:
+            req = StockSnapshotRequest(symbol_or_symbols=symbol)
+            snap = self._stock.get_stock_snapshot(req)
+            snap = snap.get(symbol) if isinstance(snap, dict) else snap
+            daily = getattr(snap, 'daily_bar', None)
+            prev = getattr(snap, 'previous_daily_bar', None)
+            trade = getattr(snap, 'latest_trade', None)
+            quote = getattr(snap, 'latest_quote', None)
+            if trade is not None:
+                result['price'] = float(getattr(trade, 'price', 0) or 0)
+            if quote is not None:
+                result['bid'] = float(getattr(quote, 'bid_price', 0) or 0)
+                result['ask'] = float(getattr(quote, 'ask_price', 0) or 0)
+            if daily is not None:
+                result['price'] = float(getattr(daily, 'close', 0) or result['price'] or 0)
+                if prev is not None:
+                    prev_close = float(getattr(prev, 'close', 0) or 0)
+                    result['prev_close'] = prev_close
+                    px = result['price']
+                    if px and prev_close:
+                        result['day_change_pct'] = round((px - prev_close) / prev_close * 100, 2)
+        except Exception as e:
+            logger.error("Alpaca get_market_snapshot (live) failed for %s: %s", symbol, e)
+
+        # 2. Statistics from daily bars (52-week high/low, YTD).
+        if df is not None and not df.empty and 'close' in df:
+            closes = df['close'].dropna()
+            if len(closes) > 0:
+                result['high_52w'] = round(float(closes.max()), 2)
+                result['low_52w'] = round(float(closes.min()), 2)
+                # YTD: compare first vs last close of the current year.
+                try:
+                    df2 = df.copy()
+                    if 'timestamp' in df2.columns:
+                        df2['year'] = pd.to_datetime(df2['timestamp']).dt.year
+                        cur_year = datetime.now().year
+                        ytd = df2[df2['year'] == cur_year]
+                        if len(ytd) >= 2:
+                            first = float(ytd['close'].iloc[0])
+                            last = float(ytd['close'].iloc[-1])
+                            if first:
+                                result['ytd_change_pct'] = round((last - first) / first * 100, 2)
+                except Exception:
+                    pass
+        return result
 
     def get_option_contracts(
         self, underlying: str, expiration_gte: str, expiration_lte: str,

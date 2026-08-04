@@ -3,20 +3,22 @@ import httpx
 from typing import Optional
 from ..config import settings
 
-SYSTEM_PROMPT = """You are a trading analyst assistant for VEXARIUM. Analyze the provided technical indicators, options data, and news sentiment to provide a natural-language recommendation.
+SYSTEM_PROMPT = """You are a trading analyst assistant for VEXARIUM. Analyze the provided technical indicators, options data, news sentiment, and market context to provide a natural-language recommendation.
 
 Rules:
 - State whether this is a good time to buy, hold, or sell.
 - Reference specific indicator values in your analysis.
 - If options data is provided, comment on Greeks and time decay.
 - If news sentiment is provided, factor it into your recommendation.
+- If market context is provided (current price, day change, 52-week high/low, YTD change), comment on where the price sits in its recent range and how that informs the setup.
 - Always include the disclaimer: "This is not financial advice."
-- Keep your response under 200 words.
+- Keep your response under 250 words.
 - Be direct and clinical in tone."""
 
 def build_prompt(indicator_results: list, overall_verdict: dict,
                  options_data: Optional[dict] = None, news_sentiment: Optional[dict] = None,
-                 news_articles: Optional[list] = None) -> str:
+                 news_articles: Optional[list] = None,
+                 market_data: Optional[dict] = None) -> str:
     context = {
         "overall_verdict": overall_verdict.get("overall_verdict", "unknown"),
         "indicators": [
@@ -24,6 +26,8 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
             for r in indicator_results
         ],
     }
+    if market_data:
+        context["market"] = market_data
     if options_data:
         context["options"] = options_data
     if news_sentiment:

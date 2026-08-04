@@ -42,7 +42,13 @@ async def ai_analysis(request: Request, body: AnalysisRequest, _: str = Depends(
         indicator_results = [r.to_dict() for r in engine.compute_all(df)]
         overall = aggregate(indicator_results)
         news, articles = _fetch_news(client, sym)
-        prompt = build_prompt(indicator_results, overall, news_sentiment=news, news_articles=articles)
+        # Comprehensive context: live price, day change, 52-week range, YTD change.
+        market_data = client.get_market_snapshot(sym, df)
+        prompt = build_prompt(
+            indicator_results, overall,
+            news_sentiment=news, news_articles=articles,
+            market_data=market_data,
+        )
         text = await llm_analyze(prompt)
         return {
             "symbol": sym,
@@ -51,6 +57,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, _: str = Depends(
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "news_sentiment": news,
             "news_articles": articles[:8],
+            "market": market_data,
         }
     except Exception:
         logger.error("AI analysis failed", exc_info=True)

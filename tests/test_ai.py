@@ -122,6 +122,10 @@ async def test_ai_endpoint_returns_analysis():
         mock_instance.get_news.return_value = [
             {"headline": "AAPL beats earnings, surges", "source": "Reuters", "url": "http://x/1", "summary": "Record quarter."}
         ]
+        mock_instance.get_market_snapshot.return_value = {
+            "price": 300.0, "day_change_pct": 1.2, "bid": 299.5, "ask": 300.5,
+            "prev_close": 296.5, "high_52w": 320.0, "low_52w": 210.0, "ytd_change_pct": 18.5,
+        }
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # AI is gated behind Pro tier: register a user and grant Pro.
@@ -140,9 +144,12 @@ async def test_ai_endpoint_returns_analysis():
             prompt_arg = mock_llm.call_args.args[0] if mock_llm.call_args.args else mock_llm.call_args.kwargs.get("prompt", "")
             assert "news_articles" in prompt_arg
             assert "AAPL beats earnings, surges" in prompt_arg
-            # Response surfaces the articles too.
-            assert "news_articles" in data
-            assert data["news_articles"][0]["headline"] == "AAPL beats earnings, surges"
+            # Market context is passed into the LLM prompt.
+            assert '"market"' in prompt_arg
+            assert "high_52w" in prompt_arg and "ytd_change_pct" in prompt_arg
+            # Response surfaces the market context too.
+            assert data["market"]["high_52w"] == 320.0
+            assert data["market"]["ytd_change_pct"] == 18.5
 
 
 @pytest.mark.asyncio
