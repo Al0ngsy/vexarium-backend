@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from ..schemas.options import (
@@ -8,7 +9,7 @@ from ..schemas.options import (
 from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
 from ..services.alpaca_client import AlpacaClient, AlpacaError
-from ..services.options_analyzer import compute_payoff, compute_breakeven, build_payoff_timeline
+from ..services.options_analyzer import compute_payoff, compute_breakeven, build_payoff_timeline, option_value_at_price
 from ..config import settings
 
 router = APIRouter(prefix="/options", tags=["options"])
@@ -103,6 +104,62 @@ async def get_option_payoff(request: Request, symbol: str, contract_symbol: str 
             premium=premium,
             breakeven=be,
             payoff_timeline=[PayoffRow(**r) for r in timeline],
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {contract_symbol}")
+    except AlpacaError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+class OptionValueAtPriceResponse(BaseModel):
+    symbol: str
+    contract_symbol: str
+    strike: float
+    premium: float
+    is_call: bool
+    target_price: float
+    target_date: str
+    days_to_expiry: int
+    estimated_option_price: float
+    estimated_pl: float
+    pl_pct: float
+
+
+@router.get("/{symbol}/value", response_model=OptionValueAtPriceResponse)
+@limiter.limit(f"{settings.rate_limit_free}/minute")
+async def get_option_value_at_price(
+    request: Request,
+    symbol: str,
+    contract_symbol: str = Query(...),
+    target_price: float = Query(...),
+    target_date: Optional[str] = None,
+):
+    """Estimate what an option is worth if the underlying trades at target_price.
+
+    Uses Black-Scholes with the contract's implied volatility. Optionally pass
+    target_date to see the value at a future date (after time decay).
+    """
+    try:
+        sym = validate_symbol(symbol)
+        strike, expiry, is_call = _parse_occ(contract_symbol)
+        client = AlpacaClient()
+        snap = client.get_option_snapshot(contract_symbol)
+        if not snap:
+            raise HTTPException(status_code=404, detail=f"No snapshot for {contract_symbol}")
+        premium = snap.get("latest_trade_price", 0) or snap.get("ask", 0)
+        iv = snap.get("implied_volatility", 0)
+        val = option_value_at_price(
+            strike=strike, premium=premium, current_price=target_price,
+            expiry_date=expiry, implied_vol=iv, is_call=is_call,
+            target_price=target_price, target_date=target_date,
+        )
+        return OptionValueAtPriceResponse(
+            symbol=sym,
+            contract_symbol=contract_symbol,
+            strike=strike,
+            premium=premium,
+            is_call=is_call,
+            **val,
         )
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {contract_symbol}")
