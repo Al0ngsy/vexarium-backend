@@ -6,26 +6,29 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.api.auth import _users, set_tier
+from app.repositories.users import get_user_store
 from app.middleware.tier_gating import get_user_tier, require_tier
 from app.services.auth import decode_token
 
 client = TestClient(app)
 
 
-def test_get_user_tier_default():
-    assert get_user_tier("") == "free"
+@pytest.mark.asyncio
+async def test_get_user_tier_default():
+    assert await get_user_tier("") == "free"
 
 
-def test_require_tier_free_allowed():
+@pytest.mark.asyncio
+async def test_require_tier_free_allowed():
     dep = require_tier("free")
-    assert dep("") == "free"
+    assert await dep("") == "free"
 
 
-def test_require_tier_pro_denied():
+@pytest.mark.asyncio
+async def test_require_tier_pro_denied():
     dep = require_tier("pro")
     with pytest.raises(HTTPException) as excinfo:
-        dep("")
+        await dep("")
     assert excinfo.value.status_code == 403
 
 
@@ -46,7 +49,8 @@ def test_extended_endpoint_denied():
     assert resp.status_code == 403
 
 
-def test_extended_endpoint_allowed(monkeypatch):
+@pytest.mark.asyncio
+async def test_extended_endpoint_allowed():
     import pandas as pd
     import numpy as np
     from unittest.mock import patch
@@ -63,8 +67,9 @@ def test_extended_endpoint_allowed(monkeypatch):
     body = _register("pro.user@example.com")
     token = body["access_token"]
     uid = int(decode_token(token)["sub"])
-    # Manually escalate to pro tier.
-    set_tier(uid, "pro")
+    # Manually escalate to pro tier via the user store.
+    store = get_user_store()
+    await store.set_tier(uid, "pro")
 
     df = make_synthetic_df()
     with patch("app.api.analysis.AlpacaClient") as MockClient:

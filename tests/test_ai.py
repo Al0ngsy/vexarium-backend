@@ -129,11 +129,11 @@ async def test_ai_endpoint_returns_analysis():
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # AI is gated behind Pro tier: register a user and grant Pro.
-            from app.api.auth import _users, set_tier
-            from app.services.auth import create_access_token
-            _users.clear()
-            token = create_access_token(1, tier="pro")
-            _users[1] = {"id": 1, "email": "pro@test.dev", "password_hash": "x", "tier": "pro"}
+            from app.repositories.users import get_user_store
+            from app.services.auth import hash_password, create_access_token
+            store = get_user_store()
+            user = await store.create("pro@test.dev", hash_password("secret123"), tier="pro")
+            token = create_access_token(user["id"], tier="pro")
             resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"}, params={"token": token})
             assert resp.status_code == 200
             data = resp.json()
@@ -157,8 +157,6 @@ async def test_ai_endpoint_rejects_free_tier():
     """AI analysis is a Pro feature — a free (anonymous) user gets 403."""
     from httpx import ASGITransport, AsyncClient
     from app.main import app
-    from app.api.auth import _users
-    _users.clear()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})

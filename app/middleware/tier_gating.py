@@ -1,10 +1,10 @@
 from fastapi import HTTPException
 
-from ..api.auth import _users
 from ..config import settings
+from ..repositories.users import get_user_store
 
 
-def get_user_tier(token: str = "") -> str:
+async def get_user_tier(token: str = "") -> str:
     # Dev-only bypass: flip DEV_FORCE_PRO=true in .env to preview Pro features locally.
     if settings.dev_force_pro and settings.vexarium_env != "production":
         return "pro"
@@ -15,15 +15,16 @@ def get_user_tier(token: str = "") -> str:
     try:
         payload = decode_token(token)
         uid = int(payload.get("sub", "0"))
-        user = _users.get(uid)
+        store = get_user_store()
+        user = await store.get_by_id(uid)
         return user.get("tier", "free") if user else "free"
     except Exception:
         return "free"
 
 
 def require_tier(tier: str = "free"):
-    def dependency(token: str = ""):
-        user_tier = get_user_tier(token)
+    async def dependency(token: str = ""):
+        user_tier = await get_user_tier(token)
         tiers = {"free": 0, "pro": 1, "enterprise": 2}
         if tiers.get(user_tier, 0) < tiers.get(tier, 0):
             raise HTTPException(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +25,15 @@ from app.middleware.rate_limit import get_limiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Create Postgres tables on startup if DATABASE_URL is configured.
+    from app.db import init_db, dispose_db
+    await init_db()
+    yield
+    await dispose_db()
+
 # --- Optional Sentry initialization ---
 if settings.sentry_dsn:
     try:
@@ -41,6 +51,7 @@ app = FastAPI(
     title="VEXARIUM API",
     description="Trading signal and options analysis tool — informational only, not financial advice",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # --- Rate limiting ---

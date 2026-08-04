@@ -34,7 +34,7 @@ async def webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
     try:
-        result = handle_webhook(payload, sig_header)
+        result = await handle_webhook(payload, sig_header)
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Webhook error: {e}")

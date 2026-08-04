@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # --- Stripe ---
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
+    stripe_price_id: str = ""  # Pro subscription price id from the Stripe dashboard
 
     # --- Auth ---
     jwt_secret: str = "change-me-in-production"

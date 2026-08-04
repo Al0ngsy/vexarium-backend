@@ -18,6 +18,10 @@ def _test_env():
     # Keep tier-gating tests deterministic regardless of a local .env that may set
     # DEV_FORCE_PRO=true for manual dev preview. Tests always exercise the real gate.
     settings.dev_force_pro = False
+    # Tests must stay hermetic: never hit Postgres/Redis (which a local .env may
+    # configure). Force empty URLs so the in-memory stores are used.
+    settings.database_url = ""
+    settings.redis_url = ""
     yield
     settings.dev_force_pro = False
 
@@ -27,3 +31,15 @@ def _clear_cache():
     cache_module._ttl_cache.clear()
     yield
     cache_module._ttl_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_user_store():
+    # The user store is a process-wide singleton; reset it so tests are isolated.
+    from app.repositories.users import reset_user_store
+    from app.api.trades import reset_trade_repo
+    reset_user_store()
+    reset_trade_repo()
+    yield
+    reset_user_store()
+    reset_trade_repo()
