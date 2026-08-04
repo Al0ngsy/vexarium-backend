@@ -63,6 +63,17 @@ def _covered_call(strike, premium, current_price):
 
 def _bull_call_spread(strike1, strike2, debit, current_price):
     max_profit = round((strike2 - strike1) - debit, 2)
+    # Payoff curve: buy strike1 call, sell strike2 call (both long expiry).
+    lo, hi = current_price * 0.9, current_price * 1.1
+    step = round((hi - lo) / 40, 2) or 0.5
+    curve = []
+    p = lo
+    while p <= hi:
+        long_leg = max(p - strike1, 0)
+        short_leg = max(p - strike2, 0)
+        pl = round((long_leg - short_leg) - debit, 2)
+        curve.append({"price": round(p, 2), "pl": pl})
+        p += step
     return {
         "name": "BULL CALL SPREAD",
         "subtitle": f"Buy {int(strike1)}C, sell {int(strike2)}C — capped upside",
@@ -71,7 +82,7 @@ def _bull_call_spread(strike1, strike2, debit, current_price):
         "max_loss": round(debit, 2),
         "breakeven": round(strike1 + debit, 2),
         "return_on_risk": round(max_profit / debit, 4) if debit else 0,
-        "payoff_curve": [],
+        "payoff_curve": curve,
     }
 
 
@@ -95,10 +106,13 @@ def compute_strategy(strategy_type, strike, premium, current_price, strike2=None
         "covered_call": _covered_call,
         "short_put": _short_put,
     }
+    if strategy_type == "bull_call_spread":
+        # Requires a second strike; debit falls back to the first leg's premium.
+        if not strike2:
+            raise ValueError("bull_call_spread requires strike2")
+        return _bull_call_spread(strike, strike2, debit if debit else premium, current_price)
     if strategy_type in strategies:
         return strategies[strategy_type](strike, premium, current_price)
-    if strategy_type == "bull_call_spread" and strike2 and debit:
-        return _bull_call_spread(strike, strike2, debit, current_price)
     raise ValueError(f"Unknown strategy: {strategy_type}")
 
 

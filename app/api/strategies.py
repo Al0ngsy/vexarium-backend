@@ -18,9 +18,17 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
         contracts = client.get_option_contracts(sym, expiration_gte, expiration_lte)
         chain = []
         for c in contracts:
+            # Normalize the type enum/string to a lowercase 'call'/'put'.
+            raw_type = c.get('type', 'call')
+            t = str(raw_type)
+            if '.' in t:
+                t = t.rsplit('.', 1)[-1]
+            t = t.lower()
+            if t not in ('call', 'put'):
+                continue
             chain.append({
                 'strike_price': float(c.get('strike_price', 0)),
-                'type': c.get('type', 'call'),
+                'type': t,
                 'last_price': float(c.get('last_price', 0) or 0),
             })
         # Compute the technical indicators and use them to drive strategy selection.

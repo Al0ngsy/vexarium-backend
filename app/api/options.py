@@ -41,6 +41,13 @@ async def get_option_chain(
     try:
         sym = validate_symbol(symbol)
         client = AlpacaClient()
+        # Center the chain on the current underlying price so the picker shows
+        # strikes around it (and includes both calls and puts across expiries).
+        try:
+            quote = client.get_latest_quote(sym)
+            ref_price = quote.get("last_price") or quote.get("bid") or quote.get("ask")
+        except Exception:
+            ref_price = None
         contracts = client.get_option_contracts(
             underlying=sym,
             expiration_gte=expiration_gte,
@@ -48,14 +55,20 @@ async def get_option_chain(
             strike_gte=strike_gte,
             strike_lte=strike_lte,
             contract_type=contract_type,
+            around_price=float(ref_price) if ref_price else None,
         )
         schema_contracts = []
         for c in contracts:
+            raw_type = c.get("type", "call")
+            t = str(raw_type)
+            if "." in t:
+                t = t.rsplit(".", 1)[-1]
+            t = t.lower()
             schema_contracts.append(OptionContractSchema(
                 symbol=c.get("symbol", ""),
                 strike_price=float(c.get("strike_price", 0)),
                 expiration_date=str(c.get("expiration_date", "")),
-                type=c.get("type", "call"),
+                type=t,
                 last_price=float(c.get("last_price", 0) or 0),
                 volume=float(c.get("volume", 0) or 0),
                 open_interest=float(c.get("open_interest", 0) or 0),

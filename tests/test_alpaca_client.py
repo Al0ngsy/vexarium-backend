@@ -155,9 +155,10 @@ class TestOptionContracts:
     def test_returns_list(self, client):
         contract = SimpleNamespace(
             symbol="AAPL251219C00200000",
-            model_dump=lambda: {"symbol": "AAPL251219C00200000"},
+            expiration_date="2025-12-19",
+            model_dump=lambda: {"symbol": "AAPL251219C00200000", "expiration_date": "2025-12-19"},
         )
-        resp = SimpleNamespace(option_contracts=[contract])
+        resp = SimpleNamespace(option_contracts=[contract], next_page_token=None)
         client._trading.get_option_contracts.return_value = resp
 
         result = client.get_option_contracts(
@@ -165,10 +166,13 @@ class TestOptionContracts:
         )
 
         assert isinstance(result, list)
-        assert result == [{"symbol": "AAPL251219C00200000"}]
+        # The two-phase fetch discovers the expiry then fetches CALL + PUT, so the
+        # same mocked contract appears once per type (2 total).
+        assert len(result) == 2
+        assert all(r["symbol"] == "AAPL251219C00200000" for r in result)
 
     def test_empty_returns_empty_list(self, client):
-        resp = SimpleNamespace(option_contracts=[])
+        resp = SimpleNamespace(option_contracts=[], next_page_token=None)
         client._trading.get_option_contracts.return_value = resp
 
         result = client.get_option_contracts("AAPL", "2025-12-19", "2025-12-19")

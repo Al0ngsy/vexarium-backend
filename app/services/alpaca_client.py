@@ -184,37 +184,130 @@ class AlpacaClient:
     def get_option_contracts(
         self, underlying: str, expiration_gte: str, expiration_lte: str,
         strike_gte: Optional[float] = None, strike_lte: Optional[float] = None,
-        contract_type: Optional[str] = None
+        contract_type: Optional[str] = None, limit: int = 500,
+        around_price: Optional[float] = None, max_expiries: int = 6,
     ) -> list:
+        """Fetch a usable option chain (multiple expiries, both calls and puts).
+
+        A single Alpaca call returns only ~100 contracts, filled strike-by-strike
+        for the *nearest* expiry — so a naive fetch yields one expiry and one type.
+        This fetches two-phase:
+
+        1. Paginate to discover the distinct expiry dates in range.
+        2. For the ``max_expiries`` nearest dates, fetch CALL + PUT contracts. If
+           ``around_price`` is given, restrict strikes to a window around it so the
+           picker centers on the current underlying price; otherwise fetch a broad
+           window.
+        """
         try:
-            kwargs = {
-                'underlying_symbols': [underlying],
-                'expiration_date_gte': expiration_gte,
-                'expiration_date_lte': expiration_lte,
-                'status': 'active',
-            }
-            if strike_gte is not None:
-                kwargs['strike_price_gte'] = str(strike_gte)
-            if strike_lte is not None:
-                kwargs['strike_price_lte'] = str(strike_lte)
-            if contract_type is not None:
-                ct = contract_type.lower()
-                if ct in ('call', 'put'):
-                    kwargs['type'] = ContractType.CALL if ct == 'call' else ContractType.PUT
-            req = GetOptionContractsRequest(**kwargs)
-            resp = self._trading.get_option_contracts(req)
-            contracts = resp.option_contracts if hasattr(resp, 'option_contracts') else []
-            result = []
-            for c in contracts:
-                d = c.model_dump() if hasattr(c, 'model_dump') else dict(c)
-                result.append(d)
-            return result
+            results: list = []
+            # Single-type path: paginate that type directly.
+            if contract_type:
+                return self._fetch_contracts(
+                    underlying, expiration_gte, expiration_lte,
+                    strike_gte, strike_lte, contract_type, limit,
+                )
+
+            # Two-phase: discover expiries, then fetch per-expiry both types.
+            expiries = self._discover_expiries(underlying, expiration_gte, expiration_lte)
+            if not expiries:
+                return []
+            for exp in expiries[:max_expiries]:
+                for ct in ('call', 'put'):
+                    results.extend(self._fetch_contracts(
+                        underlying, exp, exp, strike_gte, strike_lte, ct,
+                        budget=max(1, limit // (max_expiries * 2)),
+                        around_price=around_price,
+                    ))
+            return results
         except Exception as e:
             logger.error("Alpaca get_option_contracts failed for %s: %s", underlying, e)
             err_msg = str(e).lower()
             if 'subscription' in err_msg or 'permission' in err_msg:
                 raise SubscriptionRequiredError(f"Options data subscription required for {underlying}")
             raise AlpacaError(f"Failed to fetch option contracts for {underlying}")
+
+    def _discover_expiries(self, underlying, gte, lte, max_dates=10) -> list:
+        """Paginate calls to discover distinct expiration dates in range."""
+        expiries = set()
+        token: Optional[str] = None
+        for _ in range(25):
+            kwargs: dict = {
+                'underlying_symbols': [underlying],
+                'expiration_date_gte': gte,
+                'expiration_date_lte': lte,
+                'status': 'active',
+                'limit': 100,
+                'type': ContractType.CALL,
+            }
+            if token is not None:
+                kwargs['page_token'] = token
+            req = GetOptionContractsRequest(**kwargs)
+            resp = self._trading.get_option_contracts(req)
+            contracts = []
+            if hasattr(resp, 'option_contracts'):
+                contracts = resp.option_contracts or []
+            elif isinstance(resp, dict):
+                contracts = resp.get('option_contracts') or []
+            for c in contracts:
+                expiries.add(str(getattr(c, 'expiration_date', None)))
+            if hasattr(resp, 'next_page_token'):
+                token = resp.next_page_token
+            elif isinstance(resp, dict):
+                token = resp.get('next_page_token')
+            else:
+                token = None
+            if not token or not contracts or len(expiries) >= max_dates:
+                break
+        return sorted([e for e in expiries if e and e != 'None'])[:max_dates]
+
+    def _fetch_contracts(self, underlying, gte, lte, strike_gte, strike_lte,
+                         contract_type, budget, around_price=None) -> list:
+        """Fetch one contract type in a date window, paginating until budget or done."""
+        results: list = []
+        token: Optional[str] = None
+        fetched = 0
+        while fetched < budget:
+            kwargs: dict = {
+                'underlying_symbols': [underlying],
+                'expiration_date_gte': gte,
+                'expiration_date_lte': lte,
+                'status': 'active',
+                'limit': 100,
+                'type': ContractType.CALL if contract_type.lower() == 'call' else ContractType.PUT,
+            }
+            if strike_gte is not None:
+                kwargs['strike_price_gte'] = str(strike_gte)
+            if strike_lte is not None:
+                kwargs['strike_price_lte'] = str(strike_lte)
+            if around_price is not None:
+                # Window strikes within ±12% of the reference price so the picker
+                # centers on the current underlying price.
+                lo = round(around_price * 0.88, 2)
+                hi = round(around_price * 1.12, 2)
+                kwargs['strike_price_gte'] = str(lo)
+                kwargs['strike_price_lte'] = str(hi)
+            if token is not None:
+                kwargs['page_token'] = token
+            req = GetOptionContractsRequest(**kwargs)
+            resp = self._trading.get_option_contracts(req)
+            contracts = []
+            if hasattr(resp, 'option_contracts'):
+                contracts = resp.option_contracts or []
+            elif isinstance(resp, dict):
+                contracts = resp.get('option_contracts') or []
+            for c in contracts:
+                results.append(c.model_dump() if hasattr(c, 'model_dump') else dict(c))
+            if hasattr(resp, 'next_page_token'):
+                token = resp.next_page_token
+            elif isinstance(resp, dict):
+                token = resp.get('next_page_token')
+            else:
+                token = None
+            if not token or not contracts:
+                break
+            fetched += len(contracts)
+        return results
 
     def get_option_snapshot(self, symbol: str) -> dict:
         try:
