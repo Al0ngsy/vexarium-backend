@@ -34,12 +34,21 @@ async def ready():
     if settings.database_url:
         deps["database"] = "unknown"
         try:
-            import sqlalchemy
-
-            engine = sqlalchemy.create_engine(settings.database_url)
-            with engine.connect() as conn:
-                conn.execute(sqlalchemy.text("SELECT 1"))
-            deps["database"] = "ok"
+            # Use asyncpg directly (the URL may be the async asyncpg driver form,
+            # which a sync sqlalchemy engine can't consume).
+            from sqlalchemy.ext.asyncio import create_async_engine
+            url = settings.database_url
+            if url.startswith("postgresql://") or url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            eng = create_async_engine(url)
+            try:
+                from sqlalchemy import text
+                async with eng.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                deps["database"] = "ok"
+            finally:
+                await eng.dispose()
         except Exception:
             deps["database"] = "down"
     all_ok = all(v == "ok" for v in deps.values())
