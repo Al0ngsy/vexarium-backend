@@ -11,6 +11,8 @@ from slowapi.errors import RateLimitExceeded
 from app.api.health import router as health_router
 from app.api.auth import router as auth_router
 from app.api.analysis import router as analysis_router
+from app.api.ai import router as ai_router
+from app.api.assets import router as assets_router
 from app.api.billing import router as billing_router
 from app.api.portfolio import router as portfolio_router
 from app.api.options import router as options_router
@@ -61,6 +63,8 @@ app.middleware("http")(request_logging_middleware)
 app.include_router(health_router, prefix="/api/v1/health", tags=["health"])
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
+app.include_router(ai_router, prefix="/api/v1")
+app.include_router(assets_router, prefix="/api/v1")
 app.include_router(billing_router, prefix="/api/v1")
 app.include_router(portfolio_router, prefix="/api/v1")
 app.include_router(options_router, prefix="/api/v1")

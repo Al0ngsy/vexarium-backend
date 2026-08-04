@@ -1,6 +1,22 @@
 from pydantic import BaseModel
 from typing import Optional
 
+class IndicatorPoint(BaseModel):
+    t: str            # ISO date of the bar
+    v: float          # indicator value at that point
+
+class IndicatorSeries(BaseModel):
+    name: str
+    kind: str                       # "overlay" (price-scale) or "oscillator" (0-100 or unbounded)
+    points: list[IndicatorPoint]    # series over the same window as the price series
+
+class PricePoint(BaseModel):
+    t: str
+    open: float
+    high: float
+    low: float
+    close: float
+
 class IndicatorResult(BaseModel):
     name: str
     value: Optional[float | dict] = None
@@ -22,5 +38,8 @@ class AnalysisResponse(BaseModel):
     symbol: str
     asset_type: str
     current_price: Optional[float] = None
+    analyzed_at: Optional[str] = None
     overall: OverallVerdict
     indicators: list[IndicatorResult]
+    price_series: list[PricePoint] = []          # OHLC for the chart (last ~120 bars)
+    indicator_series: list[IndicatorSeries] = []  # per-indicator line series

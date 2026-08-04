@@ -63,5 +63,50 @@ async def test_analyze_skip_ai():
 
 @pytest.mark.asyncio
 async def test_analyze_no_api_key():
-    result = await analyze("test prompt", skip_ai=False)
-    assert "not financial advice" in result.lower()
+    # Force an empty key so the fallback path is deterministic regardless of
+    # whether a real LLM key is present in the environment.
+    from unittest.mock import patch
+    import app.services.ai_analyzer as analyzer_module
+    with patch.object(analyzer_module.settings, "llm_api_key", ""):
+        result = await analyze("test prompt", skip_ai=False)
+        assert "not financial advice" in result.lower()
+
+
+# --- AI endpoint tests -----------------------------------------------------
+
+import pandas as pd
+
+
+def _make_df(n=250):
+    import numpy as np
+    np.random.seed(7)
+    closes = 100 + np.cumsum(np.random.randn(n) * 0.5)
+    return pd.DataFrame({
+        "open": closes - 0.5, "high": closes + 1, "low": closes - 1,
+        "close": closes, "volume": [1000000.0] * n,
+        "timestamp": pd.date_range("2025-01-01", periods=n, freq="D"),
+    })
+
+
+@pytest.mark.asyncio
+async def test_ai_endpoint_returns_analysis():
+    from unittest.mock import patch
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+
+    df = _make_df()
+    from unittest.mock import AsyncMock
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.api.ai.llm_analyze", new=AsyncMock(return_value="Mocked AI analysis. This is not financial advice.")
+    ) as mock_llm:
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "analysis" in data
+            assert data["symbol"] == "AAPL"
+            assert mock_llm.called
+
