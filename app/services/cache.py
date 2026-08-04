@@ -53,6 +53,7 @@ CACHE_TTL_BARS = 6 * 3600      # daily bars change once per day
 CACHE_TTL_QUOTE = 5            # seconds during market hours
 CACHE_TTL_NEWS = 30 * 60       # 30 min
 CACHE_TTL_AI = 24 * 3600       # AI analysis per symbol per day
+CACHE_TTL_ANALYSIS = 24 * 3600 # computed analysis per symbol per day
 
 
 def bars_key(symbol: str) -> str:
@@ -70,3 +71,10 @@ def news_key(symbol: str) -> str:
 def ai_key(symbol: str) -> str:
     from datetime import date
     return f"ai:{symbol}:{date.today().isoformat()}"
+
+
+def analysis_key(symbol: str, extended: bool = False) -> str:
+    """Daily analysis result for a symbol. Indicators are computed from daily bars,
+    so the computed result only changes once per day -> cache for the whole day."""
+    from datetime import date
+    return f"analysis:{'pro:' if extended else ''}{symbol}:{date.today().isoformat()}"

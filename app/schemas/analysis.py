@@ -34,6 +34,35 @@ class AnalysisRequest(BaseModel):
     asset_type: str = "stock"
     options_enabled: bool = False
 
+class NewsArticle(BaseModel):
+    """Alpaca news article. Alpaca returns id as int and created_at as a
+    datetime, so keep those loosely typed to avoid validation failures."""
+    id: Optional[str | int] = None
+    headline: str
+    source: Optional[str] = None
+    url: Optional[str] = None
+    summary: Optional[str] = None
+    created_at: Optional[str] = None
+    author: Optional[str] = None
+    symbols: list[str] = []
+
+    @classmethod
+    def from_article(cls, a: dict) -> "NewsArticle":
+        created = a.get("created_at")
+        if hasattr(created, "isoformat"):
+            created = created.isoformat()
+        return cls(
+            id=str(a.get("id")) if a.get("id") is not None else None,
+            headline=a.get("headline") or a.get("title") or "",
+            source=a.get("source") or "",
+            url=a.get("url") or "",
+            summary=a.get("summary") or "",
+            created_at=created,
+            author=a.get("author") or "",
+            symbols=a.get("symbols") or [],
+        )
+
+
 class AnalysisResponse(BaseModel):
     symbol: str
     asset_type: str
@@ -44,3 +73,4 @@ class AnalysisResponse(BaseModel):
     price_series: list[PricePoint] = []          # OHLC for the chart (last ~120 bars)
     indicator_series: list[IndicatorSeries] = []  # per-indicator line series
     news_sentiment: Optional[dict] = None         # {sentiment_score, article_count, summary}
+    news_articles: list[NewsArticle] = []         # actual headlines for the dropdown

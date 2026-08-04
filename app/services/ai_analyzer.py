@@ -55,7 +55,10 @@ async def analyze(prompt: str, skip_ai: bool = False) -> str:
                     json={
                         "model": settings.llm_model,
                         "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 300,
+                        # Generous budget: this model spends tokens on internal
+                        # reasoning BEFORE producing content. Too small a budget
+                        # (e.g. 300) yields empty content -> "temporarily unavailable".
+                        "max_tokens": 2000,
                     },
                 )
                 resp.raise_for_status()

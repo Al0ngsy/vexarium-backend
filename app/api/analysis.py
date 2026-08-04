@@ -11,6 +11,7 @@ from ..schemas.analysis import (
     IndicatorResult,
     IndicatorSeries,
     IndicatorPoint,
+    NewsArticle,
     OverallVerdict,
     PricePoint,
 )
@@ -20,6 +21,7 @@ from ..services.chart_series import build_price_series, compute_series_for, indi
 from ..middleware.tier_gating import require_tier
 from ..services.verdicts import aggregate
 from ..services.news_service import get_news_sentiment
+from ..services.cache import cache_get, cache_set, analysis_key, CACHE_TTL_ANALYSIS
 from ..config import settings
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
@@ -27,14 +29,43 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 logger = logging.getLogger("vexarium.api.analysis")
 
 
-def _fetch_news_sentiment(client: AlpacaClient, symbol: str) -> dict:
-    """Fetch recent news and return a sentiment summary. Never raises."""
+def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
+    """Fetch recent news. Returns (sentiment_summary, article_list). Never raises."""
     try:
         articles = client.get_news(symbol, limit=10)
-        return get_news_sentiment(articles)
+        return get_news_sentiment(articles), articles
     except Exception:
-        logger.error("News sentiment failed for %s", symbol, exc_info=True)
-        return {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."}
+        logger.error("News fetch failed for %s", symbol, exc_info=True)
+        return (
+            {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."},
+            [],
+        )
+
+
+def _build_response(sym: str, body: AnalysisRequest, df, indicator_results, extended: bool = False):
+    """Compute the full AnalysisResponse payload (indicators, series, news)."""
+    overall = aggregate(indicator_results)
+    current_price = float(df.iloc[-1]["close"]) if not df.empty else None
+    price_series, indicator_series = _build_series_payload(df, indicator_results)
+    client = AlpacaClient()
+    news, news_articles = _fetch_news(client, sym)
+    return AnalysisResponse(
+        symbol=sym,
+        asset_type=body.asset_type,
+        current_price=current_price,
+        analyzed_at=datetime.now(timezone.utc).isoformat(),
+        overall=OverallVerdict(
+            overall_verdict=overall["overall_verdict"],
+            score=overall["score"],
+            indicator_count=overall["indicator_count"],
+            breakdown=[IndicatorResult(**r) for r in overall["breakdown"]],
+        ),
+        indicators=[IndicatorResult(**r.to_dict()) for r in indicator_results],
+        price_series=price_series,
+        indicator_series=indicator_series,
+        news_sentiment=news,
+        news_articles=[NewsArticle.from_article(a) for a in news_articles[:8]],
+    )
 
 
 def _build_series_payload(df, indicator_results):
@@ -66,33 +97,24 @@ def _build_series_payload(df, indicator_results):
 async def analyze(request: Request, body: AnalysisRequest):
     try:
         sym = validate_symbol(body.symbol)
+        # Daily bars -> computed indicators only change once per day, so the whole
+        # analysis result is cached per symbol per day (cheap repeat lookups).
+        key = analysis_key(sym, extended=False)
+        cached = await cache_get(key)
+        if cached is not None:
+            try:
+                return AnalysisResponse.model_validate(cached)
+            except Exception:
+                pass
         client = AlpacaClient()
         df = client.get_stock_bars(sym)
         if df.empty:
             raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
         engine = create_default_engine()
         indicator_results = engine.compute_all(df)
-        overall = aggregate(indicator_results)
-        current_price = float(df.iloc[-1]["close"]) if not df.empty else None
-        price_series, indicator_series = _build_series_payload(df, indicator_results)
-        news = _fetch_news_sentiment(client, sym)
-        return AnalysisResponse(
-            symbol=sym,
-            asset_type=body.asset_type,
-            current_price=current_price,
-            analyzed_at=datetime.now(timezone.utc).isoformat(),
-            overall=OverallVerdict(
-                overall_verdict=overall["overall_verdict"],
-                score=overall["score"],
-                indicator_count=overall["indicator_count"],
-                breakdown=[IndicatorResult(**r) for r in overall["breakdown"]],
-            ),
-            # compute_all returns IndicatorResult dataclass objects; convert via to_dict
-            indicators=[IndicatorResult(**r.to_dict()) for r in indicator_results],
-            price_series=price_series,
-            indicator_series=indicator_series,
-            news_sentiment=news,
-        )
+        response = _build_response(sym, body, df, indicator_results)
+        await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)
+        return response
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))
     except HTTPException:
@@ -107,32 +129,22 @@ async def analyze(request: Request, body: AnalysisRequest):
 async def analyze_extended(request: Request, body: AnalysisRequest, _: str = Depends(require_tier("pro"))):
     try:
         sym = validate_symbol(body.symbol)
+        key = analysis_key(sym, extended=True)
+        cached = await cache_get(key)
+        if cached is not None:
+            try:
+                return AnalysisResponse.model_validate(cached)
+            except Exception:
+                pass
         client = AlpacaClient()
         df = client.get_stock_bars(sym)
         if df.empty:
             raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
         engine = create_pro_engine()
         indicator_results = engine.compute_all(df)
-        overall = aggregate(indicator_results)
-        current_price = float(df.iloc[-1]["close"]) if not df.empty else None
-        price_series, indicator_series = _build_series_payload(df, indicator_results)
-        news = _fetch_news_sentiment(client, sym)
-        return AnalysisResponse(
-            symbol=sym,
-            asset_type=body.asset_type,
-            current_price=current_price,
-            analyzed_at=datetime.now(timezone.utc).isoformat(),
-            overall=OverallVerdict(
-                overall_verdict=overall["overall_verdict"],
-                score=overall["score"],
-                indicator_count=overall["indicator_count"],
-                breakdown=[IndicatorResult(**r) for r in overall["breakdown"]],
-            ),
-            indicators=[IndicatorResult(**r.to_dict()) for r in indicator_results],
-            price_series=price_series,
-            indicator_series=indicator_series,
-            news_sentiment=news,
-        )
+        response = _build_response(sym, body, df, indicator_results, extended=True)
+        await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)
+        return response
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))
     except HTTPException:
