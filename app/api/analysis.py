@@ -13,6 +13,8 @@ from ..config import settings
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
+logger = logging.getLogger("vexarium.api.analysis")
+
 
 @router.post("", response_model=AnalysisResponse)
 @limiter.limit(f"{settings.rate_limit_free}/minute")
@@ -44,8 +46,9 @@ async def analyze(request: Request, body: AnalysisRequest):
         raise HTTPException(status_code=502, detail=str(e))
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
+    except Exception:
+        logger.error("Analysis failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.post("/extended", response_model=AnalysisResponse)
@@ -77,5 +80,6 @@ async def analyze_extended(request: Request, body: AnalysisRequest, _: str = Dep
         raise HTTPException(status_code=502, detail=str(e))
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
+    except Exception:
+        logger.error("Analysis failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal error")

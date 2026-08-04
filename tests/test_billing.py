@@ -28,8 +28,15 @@ def test_handle_webhook_missing_secret():
 
 
 def test_checkout_missing_key():
-    # stripe_secret_key is empty in test env -> checkout creation raises ->
-    # endpoint returns 500.
+    # No token -> 401 (unauthenticated checkout rejected).
     resp = client.post("/api/v1/billing/checkout", params={"user_id": 1})
+    assert resp.status_code == 401
+
+
+def test_checkout_valid_token_missing_key():
+    # Valid token but empty stripe key -> checkout creation raises -> 500.
+    from app.services.auth import create_access_token
+    token = create_access_token(1)
+    resp = client.post("/api/v1/billing/checkout", params={"token": token})
     assert resp.status_code == 500
-    assert "Stripe checkout failed" in resp.json()["detail"]
+    assert resp.json()["detail"] == "Checkout failed"

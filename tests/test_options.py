@@ -1,5 +1,12 @@
 import pytest
+from app.api.options import _parse_occ
 from app.services.options_analyzer import compute_payoff, compute_breakeven, build_payoff_timeline
+
+def test_parse_occ_call():
+    assert _parse_occ("SPY250919C00750000") == (750.0, "2025-09-19", True)
+
+def test_parse_occ_put():
+    assert _parse_occ("SPY250919P00750000") == (750.0, "2025-09-19", False)
 
 def test_call_payoff_in_the_money():
     result = compute_payoff(strike=100, premium=5, current_price=110, is_call=True)

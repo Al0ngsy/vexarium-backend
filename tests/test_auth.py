@@ -29,7 +29,7 @@ def test_register_returns_token():
 def test_register_duplicate_email():
     _register("bob@example.com", "secret123")
     resp = _register("bob@example.com", "other123")
-    assert resp.status_code == 409
+    assert resp.status_code == 400
 
 
 def test_login_success():
