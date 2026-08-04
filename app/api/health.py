@@ -21,12 +21,14 @@ async def ready():
     if settings.redis_url:
         deps["redis"] = "unknown"
         try:
-            from ..services.cache import _get_redis
+            import redis.asyncio as aioredis
 
-            r = _get_redis()
-            if r:
-                await r.ping()
+            client = aioredis.from_url(settings.redis_url, decode_responses=True)
+            try:
+                await client.ping()
                 deps["redis"] = "ok"
+            finally:
+                await client.aclose()
         except Exception:
             deps["redis"] = "down"
     if settings.database_url:
