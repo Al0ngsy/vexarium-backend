@@ -115,7 +115,50 @@ docker compose config        # validate
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`): backend `pytest` + frontend `check`/`build` on push/PR. Deploy workflow is a placeholder until hosting is configured.
+GitHub Actions (`.github/workflows/ci.yml`): backend `pytest` + frontend `yarn check`/`build` on push/PR. Deploy workflow is a placeholder until hosting is configured.
+
+## Deploying the Backend
+
+### Option A — Render (fastest to start, free tier)
+1. Push the repo to GitHub (`Al0ngsy`).
+2. Render dashboard → **New → Web Service** → connect the repo, root directory `backend`.
+3. **Build command:** `pip install .`
+4. **Start command:** `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+5. Add the env vars from `.env.example` (Alpaca keys, `JWT_SECRET`, etc.). Set `VEXARIUM_ENV=production`.
+6. Deploy. A free web service spins down when idle — fine for a demo; upgrade or move to Hetzner for real traffic.
+
+### Option B — Hetzner VPS + Docker (recommended once you have paying users, ~€4/mo)
+On a fresh Hetzner Cloud CX22 (Ubuntu):
+
+```bash
+# install docker + compose on the server
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # then re-login
+
+# clone and run the stack
+git clone https://github.com/Al0ngsy/vexarium.git && cd vexarium
+cp backend/.env.example backend/.env    # fill real secrets; VEXARIUM_ENV=production
+docker compose up -d --build            # api :8000, worker, postgres, redis
+```
+
+Then put **Caddy** in front for TLS + reverse-proxy:
+
+```
+# Caddyfile
+api.vexarium.com {
+    reverse_proxy localhost:8000
+}
+```
+
+> `docker compose up` requires the Docker daemon to reach the registry (the base image pull). If Docker Desktop's network is broken on your dev machine, build/run on the VPS instead.
+
+### Production checklist
+- [ ] Set a strong `JWT_SECRET` and `VEXARIUM_ENV=production` (startup refuses the placeholder secret)
+- [ ] Real Stripe keys + webhook secret; set the webhook endpoint to `https://api.…/api/v1/billing/webhook`
+- [ ] Real Sentry DSN (optional)
+- [ ] Point `CORS_ORIGINS` at the deployed frontend domain, not `localhost`
+- [ ] Set `REDIS_URL` + `DATABASE_URL` if you want Redis caching / Postgres persistence (repo layer is in-memory until the Postgres repo is wired)
+- [ ] Add real deploy hooks to `.github/workflows/deploy.yml` (Render webhook or SSH-to-Hetzner)
 
 ---
 
