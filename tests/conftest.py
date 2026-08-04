@@ -25,6 +25,7 @@ def _test_env():
     # Keep billing tests hermetic: never hit the live Stripe API from tests.
     settings.stripe_secret_key = ""
     settings.stripe_price_id = ""
+    settings.stripe_webhook_secret = ""
     yield
     settings.dev_force_pro = False
 

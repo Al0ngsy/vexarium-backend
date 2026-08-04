@@ -37,9 +37,8 @@ async def handle_webhook(payload: bytes, sig_header: str) -> dict:
     event = stripe.Webhook.construct_event(payload, sig_header, settings.stripe_webhook_secret)
 
     if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        user_id = int(session.get("client_reference_id", "0"))
-        # Persist the Stripe customer id so we can map future events back to the user.
+        session = _to_dict(event["data"]["object"])
+        user_id = int(session.get("client_reference_id", "0") or 0)
         customer_id = session.get("customer")
         if customer_id and user_id >= 1:
             await store.set_stripe_customer(user_id, customer_id)
@@ -47,13 +46,23 @@ async def handle_webhook(payload: bytes, sig_header: str) -> dict:
         return {"event": "upgraded", "user_id": user_id, "tier": "pro"}
 
     if event["type"] == "customer.subscription.deleted":
-        # Map the Stripe customer id back to our user (persisted at checkout),
-        # then downgrade them to free.
-        customer_id = event["data"]["object"].get("customer")
+        customer_id = _to_dict(event["data"]["object"]).get("customer")
         downgraded = await _downgrade_by_customer(store, customer_id)
         return {"event": "downgraded", "user_id": downgraded, "tier": "free"}
 
     return {"event": event["type"], "user_id": None, "tier": None}
+
+
+def _to_dict(obj):
+    """Convert a StripeObject (or nested) to plain dicts so .get() works.
+
+    Stripe v15 returns StripeObject instances which do NOT implement .get().
+    """
+    if hasattr(obj, "to_dict_recursive"):
+        return obj.to_dict_recursive()
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    return dict(obj)
 
 
 async def _downgrade_by_customer(store, customer_id: str | None) -> int | None:

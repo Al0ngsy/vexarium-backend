@@ -20,11 +20,18 @@ client = TestClient(app)
     not settings.stripe_webhook_secret,
     reason="stripe_webhook_secret not configured in test env",
 )
-def test_handle_webhook_missing_secret():
+async def test_handle_webhook_missing_secret():
     # A real secret is present, but we pass a bogus/invalid signature so
-    # construct_event must raise a StripeError.
-    with pytest.raises(Exception):
-        handle_webhook(b"{}", "invalid-signature")
+    # construct_event must raise a StripeError. Set a dummy secret so the
+    # signature check runs even though conftest cleared it for hermeticity.
+    import app.services.stripe_service as svc
+    old = settings.stripe_webhook_secret
+    settings.stripe_webhook_secret = "whsec_test_dummy"
+    try:
+        with pytest.raises(Exception):
+            await handle_webhook(b"{}", "invalid-signature")
+    finally:
+        settings.stripe_webhook_secret = old
 
 
 def test_checkout_missing_key():
