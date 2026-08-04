@@ -18,8 +18,33 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from urllib.parse import urlsplit, urlunsplit
 
 from .config import settings
+
+
+def _asyncpg_safe_url(database_url: str) -> str:
+    """Convert a DATABASE_URL into an asyncpg-compatible SQLAlchemy URL.
+
+    - Swaps the driver to ``postgresql+asyncpg``.
+    - Drops ALL query params (Neon appends ``channel_binding`` and ``sslmode``,
+      neither of which asyncpg's ``connect()`` accepts as a keyword).
+    - TLS is configured via ``connect_args`` (see :func:`get_engine` /
+      :func:`async_engine_for_url`), not the URL query string.
+    """
+    url = database_url
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(query=""))
+
+
+def async_engine_for_url(database_url: str) -> AsyncEngine:
+    """Build an async engine from a DATABASE_URL, configuring TLS for asyncpg."""
+    url = _asyncpg_safe_url(database_url)
+    return create_async_engine(url, pool_pre_ping=True, connect_args={"ssl": "require"})
 
 logger = logging.getLogger("vexarium.db")
 
@@ -34,13 +59,7 @@ def get_engine() -> AsyncEngine | None:
     """Return the shared async engine, creating it lazily if DATABASE_URL set."""
     global _engine, _session_factory
     if _engine is None and settings.database_url:
-        # Ensure the URL uses the async driver (asyncpg) for SQLAlchemy.
-        url = settings.database_url
-        if url.startswith("postgresql://"):
-            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        elif url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-        _engine = create_async_engine(url, pool_pre_ping=True)
+        _engine = async_engine_for_url(settings.database_url)
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
         logger.info("SQLAlchemy async engine initialized")
     return _engine
