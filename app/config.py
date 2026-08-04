@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_id: str = ""  # Pro subscription price id from the Stripe dashboard
+    # Frontend URLs for the Stripe Checkout redirect (override per environment).
+    stripe_success_url: str = "http://localhost:5173/pricing?success=1"
+    stripe_cancel_url: str = "http://localhost:5173/pricing?cancelled=1"
 
     # --- Auth ---
     jwt_secret: str = "change-me-in-production"

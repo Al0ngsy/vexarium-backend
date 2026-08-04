@@ -34,7 +34,7 @@ def test_checkout_missing_key():
 
 
 def test_checkout_valid_token_missing_key():
-    # Valid token but empty stripe key -> checkout creation raises -> 500.
+    # Valid token but empty stripe price id -> checkout creation raises -> 500.
     from app.services.auth import create_access_token
     token = create_access_token(1)
     resp = client.post("/api/v1/billing/checkout", params={"token": token})

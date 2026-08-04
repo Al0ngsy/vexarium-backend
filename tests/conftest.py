@@ -22,6 +22,9 @@ def _test_env():
     # configure). Force empty URLs so the in-memory stores are used.
     settings.database_url = ""
     settings.redis_url = ""
+    # Keep billing tests hermetic: never hit the live Stripe API from tests.
+    settings.stripe_secret_key = ""
+    settings.stripe_price_id = ""
     yield
     settings.dev_force_pro = False
 

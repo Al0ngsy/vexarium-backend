@@ -12,16 +12,20 @@ stripe.api_key = settings.stripe_secret_key
 def create_checkout_session(
     user_id: int,
     tier: str = "pro",
-    success_url: str = "http://localhost:5173/pricing?success=1",
-    cancel_url: str = "http://localhost:5173/pricing?cancelled=1",
+    success_url: str | None = None,
+    cancel_url: str | None = None,
 ):
-    price_id = settings.stripe_price_id or "price_pro_monthly"  # set in Stripe dashboard
+    # Resolve the Pro price id. A placeholder means Stripe isn't configured yet.
+    price_id = settings.stripe_price_id
+    if not price_id or price_id == "price_pro_monthly":
+        raise ValueError("STRIPE_PRICE_ID is not configured. Create a Pro price in the "
+                         "Stripe dashboard and set STRIPE_PRICE_ID in the environment.")
     session = stripe.checkout.Session.create(
         mode="subscription",
         line_items=[{"price": price_id, "quantity": 1}],
         client_reference_id=str(user_id),
-        success_url=success_url,
-        cancel_url=cancel_url,
+        success_url=success_url or settings.stripe_success_url,
+        cancel_url=cancel_url or settings.stripe_cancel_url,
     )
     return session
 
