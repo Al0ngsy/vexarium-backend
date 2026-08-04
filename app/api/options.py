@@ -6,10 +6,14 @@ from ..schemas.options import (
     OptionContractSchema, OptionsChainResponse, OptionsPayoffResponse,
     GreeksSchema, PayoffRow
 )
+from ..schemas.matrix import OptionsMatrixResponse
 from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
 from ..services.alpaca_client import AlpacaClient, AlpacaError
-from ..services.options_analyzer import compute_payoff, compute_breakeven, build_payoff_timeline, option_value_at_price
+from ..services.options_analyzer import (
+    compute_payoff, compute_breakeven, build_payoff_timeline,
+    option_value_at_price, build_payoff_matrix,
+)
 from ..config import settings
 
 router = APIRouter(prefix="/options", tags=["options"])
@@ -109,6 +113,75 @@ async def get_option_payoff(request: Request, symbol: str, contract_symbol: str 
         raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {contract_symbol}")
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+class MatrixRequest(BaseModel):
+    contract_symbol: str
+    range_pct: float = 0.05
+    quantity: int = 100
+
+
+@router.post("/{symbol}/matrix", response_model=OptionsMatrixResponse)
+@limiter.limit(f"{settings.rate_limit_free}/minute")
+async def get_options_matrix(request: Request, symbol: str, body: MatrixRequest):
+    """Build a strike × expiry P/L matrix for a contract (OptionStrat-inspired).
+
+    Rows = strikes centered ±range_pct around the current price. Columns =
+    expiry dates. Each cell is the projected P/L for holding to that expiry,
+    priced via Black-Scholes.
+    """
+    try:
+        sym = validate_symbol(symbol)
+        strike, expiry, is_call = _parse_occ(body.contract_symbol)
+        client = AlpacaClient()
+        snap = client.get_option_snapshot(body.contract_symbol)
+        if not snap:
+            raise HTTPException(status_code=404, detail=f"No snapshot for {body.contract_symbol}")
+        premium = snap.get("latest_trade_price", 0) or snap.get("ask", 0)
+        iv = snap.get("implied_volatility", 0)
+        try:
+            quote = client.get_latest_quote(sym)
+            current_price = quote.get("last_price") or quote.get("bid") or 0
+        except Exception:
+            current_price = strike  # fallback
+        expiries = _matrix_expiries(client, sym, expiry)
+        matrix = build_payoff_matrix(
+            strike=strike, premium=premium, current_price=float(current_price or 0),
+            expiry_date=expiry, implied_vol=iv, is_call=is_call,
+            expiries=expiries, range_pct=body.range_pct, quantity=body.quantity,
+        )
+        return OptionsMatrixResponse(
+            symbol=sym,
+            contract_symbol=body.contract_symbol,
+            current_price=round(float(current_price or 0), 2),
+            range_pct=body.range_pct,
+            premium=premium,
+            breakeven=matrix["breakeven"],
+            expiries=matrix["expiries"],
+            strikes=matrix["strikes"],
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {body.contract_symbol}")
+    except AlpacaError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+def _matrix_expiries(client, sym: str, primary_expiry: str) -> list[str]:
+    """Collect a handful of near expiries (primary + a few more) for the matrix."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    lte = (today + timedelta(days=200)).isoformat()
+    try:
+        contracts = client.get_option_contracts(
+            sym, today.isoformat(), lte, around_price=None, max_expiries=4
+        )
+        exps = sorted({str(c.get("expiration_date")) for c in contracts if str(c.get("expiration_date")) != "None"})
+    except Exception:
+        exps = []
+    if primary_expiry not in exps:
+        exps = [primary_expiry] + [e for e in exps if e != primary_expiry]
+    return exps[:6]
 
 
 class OptionValueAtPriceResponse(BaseModel):

@@ -58,6 +58,67 @@ def option_value_at_price(strike: float, premium: float, current_price: float,
         "pl_pct": round(pl_pct, 4),
     }
 
+
+def build_payoff_matrix(strike, premium, current_price, expiry_date, implied_vol,
+                        is_call, strikes=None, expiries=None, range_pct=0.05,
+                        quantity=100) -> dict:
+    """Build a strike × expiry P/L matrix.
+
+    Each row is a strike (default: strikes centered ±range_pct around
+    ``current_price``). Each column is an expiry date. Every cell is the
+    projected P/L for buying the option at ``premium`` and holding to that
+    expiry, priced via Black-Scholes. ``quantity`` defaults to 100 (per
+    contract) for dollar P/L.
+    """
+    # Default strike ladder: centered on current price.
+    if not strikes:
+        lo = current_price * (1 - range_pct)
+        hi = current_price * (1 + range_pct)
+        step = round((hi - lo) / 20, 2) or 1.0
+        strikes = [round(p, 2) for p in _frange(lo, hi, step)]
+    if not expiries:
+        expiries = [expiry_date]
+
+    rows = []
+    for s in strikes:
+        row = {"strike": s}
+        if current_price:
+            row["move_pct"] = round((s - current_price) / current_price * 100, 2)
+        else:
+            row["move_pct"] = 0.0
+        row["cells"] = []
+        for exp in expiries:
+            val = option_value_at_price(
+                strike=strike, premium=premium, current_price=current_price,
+                expiry_date=expiry_date, implied_vol=implied_vol, is_call=is_call,
+                target_price=s, target_date=exp,
+            )
+            row["cells"].append({
+                "expiry": exp,
+                "days_to_expiry": val["days_to_expiry"],
+                "option_value": round(val["estimated_option_price"] * quantity, 2),
+                "pl": round(val["estimated_pl"] * quantity, 2),
+                "pl_pct": val["pl_pct"],
+            })
+        rows.append(row)
+    return {
+        "strikes": rows,
+        "expiries": expiries,
+        "current_price": current_price,
+        "range_pct": range_pct,
+        "premium": premium,
+        "breakeven": compute_breakeven(strike, premium, is_call),
+    }
+
+
+def _frange(lo, hi, step):
+    out = []
+    p = lo
+    while p <= hi:
+        out.append(p)
+        p += step
+    return out
+
 def compute_payoff(strike: float, premium: float, current_price: float, is_call: bool) -> dict:
     if is_call:
         intrinsic = max(current_price - strike, 0)
