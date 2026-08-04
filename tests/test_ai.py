@@ -187,3 +187,45 @@ async def test_ai_endpoint_featured_symbol_free_preview():
             data = resp.json()
             assert data["is_preview"] is True
 
+
+@pytest.mark.asyncio
+async def test_options_strategies_ai_pro_only():
+    """Options-strategies AI is Pro-only: a free user gets 403."""
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/analysis/options-strategies", json={"symbol": "AAPL", "strike": 300})
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_options_strategies_ai_pro_user():
+    """A Pro user gets the options-strategies explanation."""
+    from unittest.mock import patch, AsyncMock
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.repositories.users import get_user_store
+    from app.services.auth import hash_password, create_access_token
+
+    df = _make_df()
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.api.ai.llm_analyze", new=AsyncMock(return_value="Consider a bull call spread. Not financial advice.")
+    ):
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_option_contracts.return_value = []
+        store = get_user_store()
+        user = await store.create("optspro@test.dev", hash_password("secret123"), tier="pro")
+        token = create_access_token(user["id"], tier="pro")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/analysis/options-strategies",
+                json={"symbol": "AAPL", "strike": 300},
+                params={"token": token},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "analysis" in data and data["is_preview"] is False
+

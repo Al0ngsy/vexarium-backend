@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from fastapi import APIRouter, Request, Depends, HTTPException
 from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
@@ -86,3 +87,65 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
     except Exception:
         logger.error("AI analysis failed", exc_info=True)
         return {"symbol": sym, "analysis": "AI analysis temporarily unavailable.", "model": settings.llm_model}
+
+
+@router.post("/options-strategies")
+@limiter.limit(f"{settings.rate_limit_pro}/minute")
+async def ai_options_strategies(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
+    """Pro feature: natural-language explanation of recommended options strategies.
+
+    Feeds the technical indicators + a user's chosen strike into the strategy
+    engine, then has the LLM explain which strategy fits and why — a
+    decision-impacting interpretation. Pro-gated (no free preview here).
+    """
+    sym = validate_symbol(body.symbol)
+    strike = body.strike or 0.0
+    if access.get("tier") != "pro":
+        raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access options AI.")
+    try:
+        client = AlpacaClient()
+        from ..services.strategy_engine import recommend_strategies
+        from datetime import date, timedelta
+        gte = date.today().isoformat()
+        lte = (date.today() + timedelta(days=60)).isoformat()
+        contracts = client.get_option_contracts(sym, gte, lte)
+        chain = []
+        for c in contracts:
+            raw_type = str(c.get('type', 'call'))
+            if '.' in raw_type:
+                raw_type = raw_type.rsplit('.', 1)[-1]
+            raw_type = raw_type.lower()
+            if raw_type not in ('call', 'put'):
+                continue
+            chain.append({
+                'strike_price': float(c.get('strike_price', 0)),
+                'type': raw_type,
+                'last_price': float(c.get('last_price', 0) or 0),
+            })
+        df = client.get_stock_bars(sym)
+        indicator_results = []
+        if not df.empty:
+            indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
+        from ..services.verdicts import aggregate
+        overall = aggregate(indicator_results)
+        sentiment = overall["overall_verdict"]
+        recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
+        prompt = (
+            f"For {sym}, the technical verdict is {sentiment}. The user is "
+            f"considering an option near strike {strike}. Recommended strategies:\n"
+            f"{json.dumps(recs, indent=2, default=str)}\n\n"
+            "Explain in 2-4 short paragraphs which strategy fits the current "
+            "technical picture, its risk/reward, and what the user should watch. "
+            "This is educational, not financial advice."
+        )
+        text = await llm_analyze(prompt)
+        return {
+            "symbol": sym,
+            "strategies": recs,
+            "analysis": text,
+            "model": settings.llm_model,
+            "is_preview": False,
+        }
+    except Exception:
+        logger.error("Options-strategies AI failed", exc_info=True)
+        return {"symbol": sym, "analysis": "Options AI temporarily unavailable.", "strategies": [], "model": settings.llm_model}

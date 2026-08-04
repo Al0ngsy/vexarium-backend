@@ -33,6 +33,7 @@ class AnalysisRequest(BaseModel):
     symbol: str
     asset_type: str = "stock"
     options_enabled: bool = False
+    strike: Optional[float] = None  # used by the options-strategies AI endpoint
 
 class NewsArticle(BaseModel):
     """Alpaca news article. Alpaca returns id as int and created_at as a
