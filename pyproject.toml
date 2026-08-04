@@ -19,6 +19,7 @@ dependencies = [
     "httpx>=0.27",
     "python-dotenv>=1.0",
     "cachetools>=5.3",
+    "setuptools>=70",  # provides pkg_resources (pandas_ta_remake imports it; removed in Py3.14)
     "redis>=5.0",
     "sqlalchemy>=2.0",
     "greenlet>=3.0",
