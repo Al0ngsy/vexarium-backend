@@ -1,9 +1,13 @@
 from fastapi import HTTPException
 
 from ..api.auth import _users
+from ..config import settings
 
 
 def get_user_tier(token: str = "") -> str:
+    # Dev-only bypass: flip DEV_FORCE_PRO=true in .env to preview Pro features locally.
+    if settings.dev_force_pro and settings.vexarium_env != "production":
+        return "pro"
     if not token:
         return "free"
     from ..services.auth import decode_token

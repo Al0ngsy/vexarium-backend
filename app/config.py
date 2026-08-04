@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     # --- Environment ---
     vexarium_env: str = "development"
+    dev_force_pro: bool = False  # dev-only: allow Pro-tier access for everyone
 
     # --- Trading thresholds ---
     take_profit_threshold: float = 0.10

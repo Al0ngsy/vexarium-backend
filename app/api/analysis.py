@@ -19,11 +19,22 @@ from ..services.indicator_engine import create_default_engine, create_pro_engine
 from ..services.chart_series import build_price_series, compute_series_for, indicator_kind
 from ..middleware.tier_gating import require_tier
 from ..services.verdicts import aggregate
+from ..services.news_service import get_news_sentiment
 from ..config import settings
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 logger = logging.getLogger("vexarium.api.analysis")
+
+
+def _fetch_news_sentiment(client: AlpacaClient, symbol: str) -> dict:
+    """Fetch recent news and return a sentiment summary. Never raises."""
+    try:
+        articles = client.get_news(symbol, limit=10)
+        return get_news_sentiment(articles)
+    except Exception:
+        logger.error("News sentiment failed for %s", symbol, exc_info=True)
+        return {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."}
 
 
 def _build_series_payload(df, indicator_results):
@@ -64,6 +75,7 @@ async def analyze(request: Request, body: AnalysisRequest):
         overall = aggregate(indicator_results)
         current_price = float(df.iloc[-1]["close"]) if not df.empty else None
         price_series, indicator_series = _build_series_payload(df, indicator_results)
+        news = _fetch_news_sentiment(client, sym)
         return AnalysisResponse(
             symbol=sym,
             asset_type=body.asset_type,
@@ -79,6 +91,7 @@ async def analyze(request: Request, body: AnalysisRequest):
             indicators=[IndicatorResult(**r.to_dict()) for r in indicator_results],
             price_series=price_series,
             indicator_series=indicator_series,
+            news_sentiment=news,
         )
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -103,6 +116,7 @@ async def analyze_extended(request: Request, body: AnalysisRequest, _: str = Dep
         overall = aggregate(indicator_results)
         current_price = float(df.iloc[-1]["close"]) if not df.empty else None
         price_series, indicator_series = _build_series_payload(df, indicator_results)
+        news = _fetch_news_sentiment(client, sym)
         return AnalysisResponse(
             symbol=sym,
             asset_type=body.asset_type,
@@ -117,6 +131,7 @@ async def analyze_extended(request: Request, body: AnalysisRequest, _: str = Dep
             indicators=[IndicatorResult(**r.to_dict()) for r in indicator_results],
             price_series=price_series,
             indicator_series=indicator_series,
+            news_sentiment=news,
         )
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))

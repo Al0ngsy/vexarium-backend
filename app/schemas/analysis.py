@@ -43,3 +43,4 @@ class AnalysisResponse(BaseModel):
     indicators: list[IndicatorResult]
     price_series: list[PricePoint] = []          # OHLC for the chart (last ~120 bars)
     indicator_series: list[IndicatorSeries] = []  # per-indicator line series
+    news_sentiment: Optional[dict] = None         # {sentiment_score, article_count, summary}
