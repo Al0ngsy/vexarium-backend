@@ -209,14 +209,17 @@ class AlpacaClient:
                 )
 
             # Two-phase: discover expiries, then fetch per-expiry both types.
+            # Spread the fetched expiries evenly across the range so the user sees
+            # near-term, mid-term AND far-dated (LEAPS) strikes.
             expiries = self._discover_expiries(underlying, expiration_gte, expiration_lte)
             if not expiries:
                 return []
-            for exp in expiries[:max_expiries]:
+            picked = self._spread_expiries(expiries, max_expiries)
+            for exp in picked:
                 for ct in ('call', 'put'):
                     results.extend(self._fetch_contracts(
                         underlying, exp, exp, strike_gte, strike_lte, ct,
-                        budget=max(1, limit // (max_expiries * 2)),
+                        budget=max(1, limit // (len(picked) * 2)),
                         around_price=around_price,
                     ))
             return results
@@ -227,8 +230,14 @@ class AlpacaClient:
                 raise SubscriptionRequiredError(f"Options data subscription required for {underlying}")
             raise AlpacaError(f"Failed to fetch option contracts for {underlying}")
 
-    def _discover_expiries(self, underlying, gte, lte, max_dates=10) -> list:
-        """Paginate calls to discover distinct expiration dates in range."""
+    def _discover_expiries(self, underlying, gte, lte, max_dates=60) -> list:
+        """Paginate to collect distinct expiration dates across the whole range.
+
+        Unlike the naive "stop at 10" version, this keeps paging so we see
+        far-dated expiries too (not just the nearest ones Alpaca returns first).
+        ``max_dates`` here bounds the *discovery* set generously; the caller
+        then samples ``max_expiries`` of them evenly across the range.
+        """
         expiries = set()
         token: Optional[str] = None
         for _ in range(25):
@@ -260,6 +269,36 @@ class AlpacaClient:
             if not token or not contracts or len(expiries) >= max_dates:
                 break
         return sorted([e for e in expiries if e and e != 'None'])[:max_dates]
+
+    @staticmethod
+    def _spread_expiries(expiries: list[str], n: int) -> list[str]:
+        """Pick ``n`` expiries spread evenly across the sorted range.
+
+        Choosing evenly (not just the nearest ``n``) means the user sees
+        near-term, mid-term AND far-dated (LEAPS) strikes — not just the next
+        few weeks.
+        """
+        if not expiries or n <= 0:
+            return expiries
+        if len(expiries) <= n:
+            return expiries
+        step = (len(expiries) - 1) / (n - 1) if n > 1 else 0
+        idxs = [round(i * step) for i in range(n)]
+        # De-dupe (rounding can collide) and backfill if needed.
+        seen: list[str] = []
+        for i in idxs:
+            e = expiries[i]
+            if e not in seen:
+                seen.append(e)
+        # Backfill any remaining slots with the earliest not-yet-seen expiries.
+        if len(seen) < n:
+            for e in expiries:
+                if e not in seen:
+                    seen.append(e)
+                if len(seen) >= n:
+                    break
+        return seen[:n]
+
 
     def _fetch_contracts(self, underlying, gte, lte, strike_gte, strike_lte,
                          contract_type, budget, around_price=None) -> list:
