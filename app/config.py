@@ -33,12 +33,6 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
     database_url: str = ""
 
-    # --- onvista (warrants / Optionsscheine) ---
-    onvista_base_url: str = "https://www.onvista.de"
-    onvista_api_base: str = "https://api.onvista.de/api/v1"
-    # Cache the onvista warrant list / build-token lookup to avoid hammering the feed.
-    onvista_cache_ttl: int = 3600  # seconds
-
     # --- Stripe ---
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
