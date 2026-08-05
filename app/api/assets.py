@@ -43,15 +43,30 @@ def _detect_type(name: str, symbol: str) -> str:
 
 @router.get("/search")
 @limiter.limit(f"{settings.rate_limit_free}/minute")
-async def search_assets(request: Request, q: str = Query("", max_length=10)):
-    q = q.strip().upper()
-    if not q:
+async def search_assets(request: Request, q: str = Query("", max_length=60)):
+    q_raw = q.strip()
+    if not q_raw:
         return {"assets": []}
+    q = q_raw.upper()
     _load_assets()
     results = []
+    # 1. Exact symbol match always surfaces first.
     for a in _assets_cache:
-        if a["symbol"].startswith(q):
+        if a["symbol"].upper() == q:
             results.append(a)
+            break
+    # 2. Symbol prefix matches.
+    for a in _assets_cache:
+        if len(results) >= 20:
+            break
+        if a["symbol"].upper().startswith(q) and a not in results:
+            results.append(a)
+    # 3. Company-name substring matches (e.g. "Apple" -> AAPL).
+    if len(results) < 20:
+        q_lower = q_raw.lower()
+        for a in _assets_cache:
             if len(results) >= 20:
                 break
-    return {"assets": results}
+            if q_lower in a["name"].lower() and a not in results:
+                results.append(a)
+    return {"assets": results[:20]}
