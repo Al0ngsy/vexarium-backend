@@ -231,43 +231,59 @@ class AlpacaClient:
             raise AlpacaError(f"Failed to fetch option contracts for {underlying}")
 
     def _discover_expiries(self, underlying, gte, lte, max_dates=60) -> list:
-        """Paginate to collect distinct expiration dates across the whole range.
+        """Collect distinct expiration dates across the whole range.
 
-        Unlike the naive "stop at 10" version, this keeps paging so we see
-        far-dated expiries too (not just the nearest ones Alpaca returns first).
-        ``max_dates`` here bounds the *discovery* set generously; the caller
-        then samples ``max_expiries`` of them evenly across the range.
+        Alpaca's ``get_option_contracts`` paginates from the *nearest* expiry
+        and typically stops after ~1-2 pages, so far-dated (LEAPS) expiries are
+        never seen. We therefore query in monthly slices across the full range,
+        each slice independently, and union the expiries. This surfaces
+        near-term, mid-term AND far-dated maturities.
         """
-        expiries = set()
-        token: Optional[str] = None
-        for _ in range(25):
-            kwargs: dict = {
-                'underlying_symbols': [underlying],
-                'expiration_date_gte': gte,
-                'expiration_date_lte': lte,
-                'status': 'active',
-                'limit': 100,
-                'type': ContractType.CALL,
-            }
-            if token is not None:
-                kwargs['page_token'] = token
-            req = GetOptionContractsRequest(**kwargs)
-            resp = self._trading.get_option_contracts(req)
-            contracts = []
-            if hasattr(resp, 'option_contracts'):
-                contracts = resp.option_contracts or []
-            elif isinstance(resp, dict):
-                contracts = resp.get('option_contracts') or []
-            for c in contracts:
-                expiries.add(str(getattr(c, 'expiration_date', None)))
-            if hasattr(resp, 'next_page_token'):
-                token = resp.next_page_token
-            elif isinstance(resp, dict):
-                token = resp.get('next_page_token')
-            else:
-                token = None
-            if not token or not contracts or len(expiries) >= max_dates:
-                break
+        from datetime import date, timedelta
+        expiries: set[str] = set()
+
+        def _query(slice_gte: str, slice_lte: str):
+            token: Optional[str] = None
+            for _ in range(10):
+                kwargs: dict = {
+                    'underlying_symbols': [underlying],
+                    'expiration_date_gte': slice_gte,
+                    'expiration_date_lte': slice_lte,
+                    'status': 'active',
+                    'limit': 100,
+                    'type': ContractType.CALL,
+                }
+                if token is not None:
+                    kwargs['page_token'] = token
+                req = GetOptionContractsRequest(**kwargs)
+                resp = self._trading.get_option_contracts(req)
+                contracts = []
+                if hasattr(resp, 'option_contracts'):
+                    contracts = resp.option_contracts or []
+                elif isinstance(resp, dict):
+                    contracts = resp.get('option_contracts') or []
+                for c in contracts:
+                    expiries.add(str(getattr(c, 'expiration_date', None)))
+                if hasattr(resp, 'next_page_token'):
+                    token = resp.next_page_token
+                elif isinstance(resp, dict):
+                    token = resp.get('next_page_token')
+                else:
+                    token = None
+                if not token or not contracts:
+                    break
+
+        # Walk the range in ~31-day slices.
+        try:
+            d = date.fromisoformat(gte)
+            end = date.fromisoformat(lte)
+        except ValueError:
+            return sorted([e for e in expiries if e and e != 'None'])[:max_dates]
+        while d <= end:
+            slice_end = min(d + timedelta(days=31), end)
+            _query(d.isoformat(), slice_end.isoformat())
+            d = slice_end + timedelta(days=1)
+
         return sorted([e for e in expiries if e and e != 'None'])[:max_dates]
 
     @staticmethod
