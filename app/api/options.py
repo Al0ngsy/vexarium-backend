@@ -42,6 +42,7 @@ async def get_option_chain(
     strike_gte: Optional[float] = None,
     strike_lte: Optional[float] = None,
     contract_type: Optional[str] = None,
+    max_expiries: int = Query(10, ge=1, le=30),
 ):
     try:
         sym = validate_symbol(symbol)
@@ -61,6 +62,7 @@ async def get_option_chain(
             strike_lte=strike_lte,
             contract_type=contract_type,
             around_price=float(ref_price) if ref_price else None,
+            max_expiries=max_expiries,
         )
         schema_contracts = []
         for c in contracts:
