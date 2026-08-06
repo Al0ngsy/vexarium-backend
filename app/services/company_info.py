@@ -47,27 +47,40 @@ def _company_key(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _fetch_quote_summary(symbol: str) -> dict:
-    """Fetch rich fundamentals from Yahoo quoteSummary (keyless, crumb dance)."""
+    """Fetch rich fundamentals from Yahoo quoteSummary (keyless, crumb dance).
+
+    Tries query1 then query2 (Yahoo sometimes blocks one host from datacenter
+    IPs), with a fresh crumb per attempt.
+    """
     modules = (
         "assetProfile,price,summaryDetail,financialData,defaultKeyStatistics,calendarEvents"
     )
-    with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT) as client:
-        # 1. Establish session + grab a crumb.
-        client.get("https://fc.yahoo.com")
-        crumb_resp = client.get("https://query1.finance.yahoo.com/v1/test/getcrumb")
-        crumb_resp.raise_for_status()
-        crumb = crumb_resp.text.strip()
-        if not crumb:
-            raise RuntimeError("no crumb")
-        # 2. Fetch the summary.
-        url = (
-            f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-            f"?modules={modules}&crumb={crumb}"
-        )
-        resp = client.get(url)
-        resp.raise_for_status()
-        payload = resp.json()
-    result = payload["quoteSummary"]["result"][0]
+    last_err: Exception | None = None
+    for host in ("query1", "query2"):
+        try:
+            with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT) as client:
+                # 1. Establish session + grab a crumb.
+                client.get("https://fc.yahoo.com")
+                crumb_resp = client.get(f"https://{host}.finance.yahoo.com/v1/test/getcrumb")
+                crumb_resp.raise_for_status()
+                crumb = crumb_resp.text.strip()
+                if not crumb:
+                    raise RuntimeError("no crumb")
+                # 2. Fetch the summary.
+                url = (
+                    f"https://{host}.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+                    f"?modules={modules}&crumb={crumb}"
+                )
+                resp = client.get(url)
+                resp.raise_for_status()
+                payload = resp.json()
+            result = payload["quoteSummary"]["result"][0]
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+    else:
+        raise RuntimeError(f"quoteSummary failed on all hosts: {last_err}")
     ap = result.get("assetProfile", {}) or {}
     pd = result.get("price", {}) or {}
     sd = result.get("summaryDetail", {}) or {}
@@ -173,6 +186,105 @@ def _fetch_wikipedia_description(name: str, symbol: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# stockanalysis.com fundamentals fallback (keyless HTML scrape)
+# ---------------------------------------------------------------------------
+
+def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
+    """Fetch fundamentals from stockanalysis.com (keyless HTML scrape).
+
+    Used when Yahoo quoteSummary is unavailable (e.g. datacenter IP blocked).
+    Returns a dict with the same field names as the Yahoo path, so the rest of
+    the pipeline is source-agnostic. Never raises on partial data.
+    """
+    url = f"https://stockanalysis.com/stocks/{symbol.lower()}/"
+    with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
+        resp = client.get(url)
+        resp.raise_for_status()
+        html = resp.text
+
+    import re
+
+    # Rows look like: <a href="..." class="dothref text-default">Label</a><!--]--></td><td ...>Value <!----><span class="rg">+51.1%</span>
+    rows = re.findall(
+        r'<a href="[^"]*" class="dothref text-default">([^<]+)</a><!--\]--></td>'
+        r'<td[^>]*>([^<]+)<',
+        html,
+    )
+    data: dict[str, str] = {}
+    for label, value in rows:
+        data[label.strip().lower()] = value.strip()
+
+    def num(label: str) -> float | None:
+        v = data.get(label)
+        if not v:
+            return None
+        v = v.replace(",", "").replace("$", "").strip()
+        mult = 1.0
+        if v.endswith("T"):
+            mult, v = 1e12, v[:-1]
+        elif v.endswith("B"):
+            mult, v = 1e9, v[:-1]
+        elif v.endswith("M"):
+            mult, v = 1e6, v[:-1]
+        elif v.endswith("K"):
+            mult, v = 1e3, v[:-1]
+        try:
+            return round(float(v) * mult, 2)
+        except ValueError:
+            return None
+
+    def pct(label: str) -> float | None:
+        v = data.get(label)
+        if not v:
+            return None
+        try:
+            return round(float(v.replace("%", "").strip()) / 100.0, 4)
+        except ValueError:
+            return None
+
+    result: dict = {}
+    name = data.get("company name") or data.get("name")
+    if name:
+        result["name"] = name
+    mcap = num("market cap")
+    if mcap:
+        result["market_cap"] = mcap
+    pe = num("pe ratio")
+    if pe:
+        result["pe_ratio"] = pe
+    ps = num("ps ratio")
+    if ps:
+        result["ps_ratio"] = ps
+    pb = num("pb ratio")
+    if pb:
+        result["pb_ratio"] = pb
+    dy = pct("dividend yield")
+    if dy is not None:
+        result["dividend_yield"] = dy
+    pm = pct("profit margin")
+    if pm is not None:
+        result["profit_margin"] = pm
+    roe = pct("return on equity")
+    if roe is not None:
+        result["roe"] = roe
+    roa = pct("return on assets")
+    if roa is not None:
+        result["roa"] = roa
+    rev = num("revenue (ttm)")
+    if rev:
+        result["revenue_ttm"] = rev
+    # 52-week range: "202.16 - 344.57"
+    rng = data.get("52-week range")
+    if rng:
+        parts = re.findall(r"[\d.]+", rng)
+        if len(parts) >= 2:
+            lo, hi = float(parts[0]), float(parts[1])
+            result["low_52w"] = round(lo, 2)
+            result["high_52w"] = round(hi, 2)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # public entrypoint
 # ---------------------------------------------------------------------------
 
@@ -199,6 +311,11 @@ def get_company_info(symbol: str) -> dict:
         result.update(_fetch_quote_summary(symbol))
     except Exception:
         logger.debug("Yahoo quoteSummary unavailable for %s", symbol)
+        # Fallback: stockanalysis.com fundamentals (keyless HTML scrape).
+        try:
+            result.update(_fetch_stockanalysis_fundamentals(symbol))
+        except Exception:
+            logger.debug("stockanalysis.com fundamentals unavailable for %s", symbol)
 
     # 52-week range + description (best-effort, non-blocking).
     try:

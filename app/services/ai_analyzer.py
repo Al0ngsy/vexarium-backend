@@ -29,7 +29,7 @@ Rules:
 - If news is provided, say how it supports or threatens the setup.
 - If options data is provided, comment on Greeks and time decay.
 - Always end with: "This is not financial advice."
-- Keep the whole response under 300 words.
+- Keep the whole response under 1000 words.
 - Be direct, clinical, and concrete. No hedging filler."""
 
 
