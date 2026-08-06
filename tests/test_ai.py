@@ -158,7 +158,7 @@ async def test_ai_endpoint_returns_analysis():
     df = _make_df()
     from unittest.mock import AsyncMock
     with patch("app.api.ai.AlpacaClient") as MockClient, patch(
-        "app.api.ai.llm_analyze", new=AsyncMock(return_value="Mocked AI analysis. This is not financial advice.")
+        "app.api.ai.llm_analyze", new=AsyncMock(return_value="Mocked AI analysis. This is not financial advice. AI can make/will make mistakes.")
     ) as mock_llm:
         mock_instance = MockClient.return_value
         mock_instance.get_stock_bars.return_value = df

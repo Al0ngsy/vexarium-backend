@@ -28,7 +28,7 @@ Rules:
 - If fundamentals are provided (P/E, margins, growth, market cap), connect them to the technical picture: is the valuation stretched relative to growth?
 - If news is provided, say how it supports or threatens the setup.
 - If options data is provided, comment on Greeks and time decay.
-- Always end with: "This is not financial advice."
+- Always end with: "This is not financial advice. AI can make/will make mistakes."
 - Be direct, clinical, and concrete. No hedging filler."""
 
 
@@ -115,7 +115,7 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
 
 async def analyze(prompt: str, skip_ai: bool = False) -> str:
     if skip_ai or not settings.llm_api_key:
-        return "AI analysis unavailable. Review the technical indicators above. This is not financial advice."
+        return "AI analysis unavailable. Review the technical indicators above."
     # The provider occasionally returns an empty completion; retry once.
     for attempt in range(2):
         try:
@@ -142,5 +142,5 @@ async def analyze(prompt: str, skip_ai: bool = False) -> str:
                 # empty completion -> try again
         except Exception:
             if attempt == 1:
-                return "AI analysis temporarily unavailable. Review the technical indicators above. This is not financial advice."
-    return "AI analysis temporarily unavailable. Review the technical indicators above. This is not financial advice."
+                return "AI analysis temporarily unavailable. Review the technical indicators above."
+    return "AI analysis temporarily unavailable. Review the technical indicators above."
