@@ -129,7 +129,9 @@ async def analyze(prompt: str, skip_ai: bool = False) -> str:
                         # Generous budget: this model spends tokens on internal
                         # reasoning BEFORE producing content. Too small a budget
                         # (e.g. 300) yields empty content -> "temporarily unavailable".
-                        "max_tokens": 2000,
+                        # 2000 was cutting deep analyses mid-sentence; 8192 lets
+                        # the full briefing through (prompt has no word cap now).
+                        "max_tokens": 8192,
                     },
                 )
                 resp.raise_for_status()
