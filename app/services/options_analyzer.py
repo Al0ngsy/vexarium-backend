@@ -7,6 +7,53 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * (1 + erf(x / sqrt(2)))
 
 
+def prob_profit(strike: float, premium: float, current_price: float,
+                days_to_expiry: float, implied_vol: float, is_call: bool,
+                risk_free: float = 0.04) -> dict:
+    """Estimate the probability of profit for a long option.
+
+    Uses a Black-Scholes normal-distribution model: the probability the
+    underlying exceeds the breakeven price by expiry (call) or stays below it
+    (put), implied by the option's implied volatility. Also returns the
+    probability the option ends ITM and an expected value.
+
+    All values are ESTIMATES (normal model, constant vol) — never guarantees.
+    """
+    try:
+        t = max(days_to_expiry, 0) / 365.0
+        if t <= 0 or implied_vol <= 0 or strike <= 0 or current_price <= 0:
+            raise ValueError("invalid inputs")
+        breakeven = compute_breakeven(strike, premium, is_call)
+        # d2 is the standard Black-Scholes d2 at the *strike*; for prob-of-ITM
+        # we use d2 computed at the strike. For prob-of-profit we use d2 at the
+        # breakeven price.
+        iv = implied_vol * sqrt(t)
+        d2_strike = (log(current_price / strike) + (risk_free - 0.5 * implied_vol ** 2) * t) / iv
+        d2_be = (log(current_price / breakeven) + (risk_free - 0.5 * implied_vol ** 2) * t) / iv
+        if is_call:
+            prob_itm = _norm_cdf(d2_strike)
+            prob_profit = _norm_cdf(d2_be)
+        else:
+            prob_itm = _norm_cdf(-d2_strike)
+            prob_profit = _norm_cdf(-d2_be)
+        # Expected value: option value at current price (theoretical) minus premium.
+        theo = black_scholes_price(strike, current_price, days_to_expiry,
+                                   implied_vol, risk_free, is_call=is_call)
+        return {
+            "prob_itm": round(prob_itm, 4),
+            "prob_profit": round(prob_profit, 4),
+            "expected_value": round(theo - premium, 2),
+            "breakeven": round(breakeven, 2),
+        }
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return {
+            "prob_itm": 0.0,
+            "prob_profit": 0.0,
+            "expected_value": 0.0,
+            "breakeven": round(compute_breakeven(strike, premium, is_call), 2),
+        }
+
+
 def black_scholes_price(strike: float, price: float, days_to_expiry: float,
                         implied_vol: float, risk_free: float = 0.04, is_call: bool = True) -> float:
     """Black-Scholes option price given a hypothetical underlying price."""

@@ -9,17 +9,19 @@ from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDa
 from alpaca.data.historical.news import NewsClient
 from alpaca.data.requests import (
     StockBarsRequest, StockLatestQuoteRequest, StockSnapshotRequest,
-    OptionSnapshotRequest, NewsRequest
+    OptionSnapshotRequest, OptionChainRequest, NewsRequest
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.data.enums import OptionsFeed
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
 from alpaca.trading.enums import ContractType
 from ..config import settings
 from .cache import (
     cache_get, cache_set,
-    bars_key, quote_key, news_key,
+    bars_key, quote_key, news_key, option_chain_key,
     CACHE_TTL_BARS, CACHE_TTL_QUOTE, CACHE_TTL_NEWS,
+    CACHE_TTL_OPTION_CHAIN,
 )
 from .exceptions import AlpacaError, SymbolNotFoundError, SubscriptionRequiredError
 
@@ -397,6 +399,137 @@ class AlpacaClient:
             if 'subscription' in err_msg or 'permission' in err_msg:
                 raise SubscriptionRequiredError(f"Options data subscription required for {symbol}")
             raise AlpacaError(f"Failed to fetch option snapshot for {symbol}")
+
+    def get_option_chain(
+        self, underlying: str,
+        expiration_gte: Optional[str] = None,
+        expiration_lte: Optional[str] = None,
+        strike_gte: Optional[float] = None,
+        strike_lte: Optional[float] = None,
+        contract_type: Optional[str] = None,
+        limit: int = 2000,
+        use_cache: bool = True,
+    ) -> list:
+        """Fetch the full option chain for an underlying via the market-data
+        ``get_option_chain`` endpoint (one call, paginated).
+
+        Returns, for **every** contract in range, the latest quote (bid/ask),
+        latest trade, implied volatility and greeks — in a single endpoint
+        (TradingView-style chain). Uses the free **indicative** feed by default
+        (delayed quotes), which is what a paper account can access.
+
+        Each item is a dict:
+            { symbol, strike_price, expiration_date, type, bid, ask,
+              last_price, implied_volatility, greeks{delta,gamma,theta,vega,rho} }
+
+        Unlike ``get_option_contracts`` (trading metadata, where volume/OI are
+        None), this gives real bid/ask + greeks per strike.
+        """
+        try:
+            key = option_chain_key(underlying)
+            if use_cache:
+                cached = _run_coro(cache_get(key))
+                if cached is not None:
+                    return cached
+            results: list = []
+            page_token: Optional[str] = None
+            while True:
+                kwargs: dict = {
+                    'underlying_symbol': underlying,
+                    'feed': OptionsFeed.INDICATIVE,
+                    'limit': limit,
+                }
+                if expiration_gte:
+                    kwargs['expiration_date_gte'] = expiration_gte
+                if expiration_lte:
+                    kwargs['expiration_date_lte'] = expiration_lte
+                if strike_gte is not None:
+                    kwargs['strike_price_gte'] = strike_gte
+                if strike_lte is not None:
+                    kwargs['strike_price_lte'] = strike_lte
+                if contract_type:
+                    kwargs['type'] = (
+                        ContractType.CALL
+                        if contract_type.lower() == 'call'
+                        else ContractType.PUT
+                    )
+                if page_token:
+                    kwargs['page_token'] = page_token
+                req = OptionChainRequest(**kwargs)
+                resp = self._option.get_option_chain(req)
+                data = resp if isinstance(resp, dict) else getattr(resp, 'data', {})
+                if not isinstance(data, dict):
+                    data = {}
+                for sym, snap in data.items():
+                    results.append(self._snapshot_to_chain_row(sym, snap))
+                # Pagination via next_page_token when using raw_data mode; the
+                # wrapped SDK client returns a plain dict so this is usually None.
+                token = None
+                if isinstance(resp, dict) and 'next_page_token' in resp:
+                    candidate = resp.get('next_page_token')
+                    token = str(candidate) if candidate else None
+                elif hasattr(resp, 'next_page_token'):
+                    candidate = getattr(resp, 'next_page_token', None)
+                    token = str(candidate) if candidate else None
+                if not token:
+                    break
+                page_token = token
+            if use_cache:
+                _run_coro(cache_set(key, results, ttl=CACHE_TTL_OPTION_CHAIN))
+            return results
+        except Exception as e:
+            logger.error("Alpaca get_option_chain failed for %s: %s", underlying, e)
+            err_msg = str(e).lower()
+            if 'subscription' in err_msg or 'permission' in err_msg:
+                raise SubscriptionRequiredError(f"Options data subscription required for {underlying}")
+            raise AlpacaError(f"Failed to fetch option chain for {underlying}")
+
+    @staticmethod
+    def _parse_occ_symbol(sym: str) -> tuple:
+        """Parse an OCC option symbol -> (strike, expiry_iso, is_call).
+
+        Layout: ROOT(1-6) + YYMMDD(6) + C/P(1) + strike(8). e.g.
+        SPY260814C00752000 -> (752.0, '2026-08-14', True).
+        """
+        s = sym.strip().upper()
+        try:
+            if len(s) < 16:
+                return (0.0, '', True)
+            cp = s[-9]
+            strike = float(s[-8:]) / 1000.0
+            yymmdd = s[-15:-9]
+            expiry = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+            return (strike, expiry, cp == "C")
+        except (ValueError, IndexError):
+            return (0.0, '', True)
+
+    @staticmethod
+    def _snapshot_to_chain_row(sym: str, snap) -> dict:
+        """Map an OptionsSnapshot (SDK model) to a flat chain row dict."""
+        greeks = getattr(snap, 'greeks', None)
+        greeks_dict = {}
+        if greeks is not None:
+            greeks_dict = {
+                'delta': float(getattr(greeks, 'delta', 0) or 0),
+                'gamma': float(getattr(greeks, 'gamma', 0) or 0),
+                'theta': float(getattr(greeks, 'theta', 0) or 0),
+                'vega': float(getattr(greeks, 'vega', 0) or 0),
+                'rho': float(getattr(greeks, 'rho', 0) or 0),
+            }
+        latest_trade = getattr(snap, 'latest_trade', None)
+        latest_quote = getattr(snap, 'latest_quote', None)
+        strike, expiry, is_call = AlpacaClient._parse_occ_symbol(sym)
+        return {
+            'symbol': sym,
+            'strike_price': strike,
+            'expiration_date': expiry,
+            'type': 'call' if is_call else 'put',
+            'bid': float(getattr(latest_quote, 'bid_price', 0) or 0) if latest_quote else 0.0,
+            'ask': float(getattr(latest_quote, 'ask_price', 0) or 0) if latest_quote else 0.0,
+            'last_price': float(getattr(latest_trade, 'price', 0) or 0) if latest_trade else 0.0,
+            'implied_volatility': float(getattr(snap, 'implied_volatility', 0) or 0),
+            'greeks': greeks_dict,
+        }
 
     def get_news(self, symbol: str, limit: int = 10) -> list:
         key = news_key(symbol)

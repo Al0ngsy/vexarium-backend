@@ -14,6 +14,7 @@ from ..schemas.analysis import (
     NewsArticle,
     OverallVerdict,
     PricePoint,
+    CompanyInfo,
 )
 from ..services.alpaca_client import AlpacaClient, AlpacaError
 from ..services.indicator_engine import create_pro_engine
@@ -21,6 +22,7 @@ from ..services.chart_series import build_price_series, compute_series_for, indi
 from ..middleware.tier_gating import require_tier
 from ..services.verdicts import aggregate
 from ..services.news_service import get_news_sentiment
+from ..services.company_info import get_company_info
 from ..services.cache import cache_get, cache_set, analysis_key, CACHE_TTL_ANALYSIS
 from ..config import settings
 
@@ -49,6 +51,15 @@ def _build_response(sym: str, body: AnalysisRequest, df, indicator_results, exte
     price_series, indicator_series = _build_series_payload(df, indicator_results)
     client = AlpacaClient()
     news, news_articles = _fetch_news(client, sym)
+    # Free, keyless company/ETF profile (Yahoo meta + Wikipedia summary). The
+    # whole analysis is cached 24h, so this only runs once per symbol per day.
+    company_info = None
+    try:
+        raw = get_company_info(sym)
+        company_info = CompanyInfo(**{k: v for k, v in raw.items() if k in CompanyInfo.model_fields})
+    except Exception:
+        logger.error("Company info failed for %s", sym, exc_info=True)
+        company_info = None
     return AnalysisResponse(
         symbol=sym,
         asset_type=body.asset_type,
@@ -65,6 +76,7 @@ def _build_response(sym: str, body: AnalysisRequest, df, indicator_results, exte
         indicator_series=indicator_series,
         news_sentiment=news,
         news_articles=[NewsArticle.from_article(a) for a in news_articles[:8]],
+        company=company_info,
     )
 
 

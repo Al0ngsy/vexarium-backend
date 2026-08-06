@@ -54,6 +54,7 @@ CACHE_TTL_QUOTE = 5            # seconds during market hours
 CACHE_TTL_NEWS = 30 * 60       # 30 min
 CACHE_TTL_AI = 24 * 3600       # AI analysis per symbol per day
 CACHE_TTL_ANALYSIS = 24 * 3600 # computed analysis per symbol per day
+CACHE_TTL_OPTION_CHAIN = 15    # indicative/delayed options quotes; short TTL
 
 
 def bars_key(symbol: str) -> str:
@@ -66,6 +67,15 @@ def quote_key(symbol: str) -> str:
 
 def news_key(symbol: str) -> str:
     return f"news:{symbol}"
+
+
+def option_chain_key(symbol: str) -> str:
+    """Option chain market-data snapshot for a symbol (indicative feed).
+
+    Options quotes/trades move intraday but are delayed (free tier), so a short
+    TTL is still safe and keeps repeated page loads cheap.
+    """
+    return f"optchain:{symbol}"
 
 
 def ai_key(symbol: str) -> str:

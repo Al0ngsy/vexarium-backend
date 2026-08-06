@@ -64,6 +64,18 @@ class NewsArticle(BaseModel):
         )
 
 
+class CompanyInfo(BaseModel):
+    """Free, keyless company/ETF profile (Yahoo meta + Wikipedia summary)."""
+    symbol: str
+    name: Optional[str] = None
+    short_name: Optional[str] = None
+    exchange: Optional[str] = None
+    high_52w: Optional[float] = None
+    low_52w: Optional[float] = None
+    currency: Optional[str] = None
+    description: Optional[str] = None  # plain-English Wikipedia summary
+
+
 class AnalysisResponse(BaseModel):
     symbol: str
     asset_type: str
@@ -75,3 +87,4 @@ class AnalysisResponse(BaseModel):
     indicator_series: list[IndicatorSeries] = []  # per-indicator line series
     news_sentiment: Optional[dict] = None         # {sentiment_score, article_count, summary}
     news_articles: list[NewsArticle] = []         # actual headlines for the dropdown
+    company: Optional[CompanyInfo] = None         # free company/ETF profile
