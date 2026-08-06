@@ -74,6 +74,48 @@ def test_build_prompt_with_news_articles():
     prompt2 = build_prompt(indicators, overall, news_sentiment=news, news_articles=many)
     assert prompt2.count('"headline"') == 8  # capped at 8
 
+
+def test_build_prompt_with_company_fundamentals():
+    indicators = [{"name": "RSI", "verdict": "buy", "value": 35}]
+    overall = {"overall_verdict": "buy", "score": 1, "indicator_count": 1, "breakdown": []}
+    company = {
+        "symbol": "AAPL", "name": "Apple Inc.", "sector": "Technology",
+        "pe_ratio": 35.7, "profit_margin": 0.25, "revenue_growth": 0.08,
+    }
+    prompt = build_prompt(indicators, overall, company_info=company)
+    assert "company_fundamentals" in prompt
+    assert "pe_ratio" in prompt
+    assert "Apple Inc." in prompt
+    # Empty/zero fields are filtered out; only non-empty values remain.
+    company2 = {"symbol": "AAPL", "name": "", "pe_ratio": 0, "sector": "Tech"}
+    prompt2 = build_prompt(indicators, overall, company_info=company2)
+    assert "company_fundamentals" in prompt2
+    assert "pe_ratio" not in prompt2
+    assert "Apple Inc." not in prompt2
+    # All-empty company -> no fundamentals section at all.
+    company3 = {"symbol": "AAPL", "name": "", "pe_ratio": 0, "sector": ""}
+    prompt3 = build_prompt(indicators, overall, company_info=company3)
+    assert "company_fundamentals" not in prompt3
+
+
+def test_build_prompt_key_levels():
+    from app.services.ai_analyzer import _key_levels
+    indicators = [
+        {"name": "Bollinger(20,2)", "verdict": "hold", "value": {"lower": 290.0, "upper": 330.0}},
+        {"name": "SMA(50)/EMA(200)", "verdict": "buy", "value": {"sma50": 300.0, "ema200": 280.0}},
+    ]
+    market = {"price": 310.0, "high_52w": 340.0, "low_52w": 250.0}
+    levels = _key_levels(indicators, market)
+    assert 290.0 in levels["support"]  # bollinger lower
+    assert 300.0 in levels["support"]  # sma50 below price
+    assert 330.0 in levels["resistance"]  # bollinger upper
+    assert 340.0 in levels["resistance"]  # 52w high
+    # Nearest 3 supports only — the far 52w low is cut by the top-3 limit.
+    assert 250.0 not in levels["support"]
+    assert len(levels["support"]) <= 3
+    # No price -> no levels.
+    assert _key_levels(indicators, {}) == {"support": [], "resistance": []}
+
 @pytest.mark.asyncio
 async def test_analyze_skip_ai():
     result = await analyze("test prompt", skip_ai=True)

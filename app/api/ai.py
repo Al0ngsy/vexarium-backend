@@ -10,6 +10,7 @@ from ..services.indicator_engine import create_pro_engine
 from ..services.verdicts import aggregate
 from ..services.ai_analyzer import build_prompt, analyze as llm_analyze
 from ..services.news_service import get_news_sentiment
+from ..services.company_info import get_company_info
 from ..services.cache import cache_get, cache_set, ai_key, CACHE_TTL_AI
 from ..config import settings
 import logging
@@ -66,10 +67,17 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
         news, articles = _fetch_news(client, sym)
         # Comprehensive context: live price, day change, 52-week range, YTD change.
         market_data = client.get_market_snapshot(sym, df)
+        # Company fundamentals (free keyless Yahoo) — enriches the briefing.
+        company_info = None
+        try:
+            company_info = get_company_info(sym)
+        except Exception:
+            logger.error("Company info failed for %s", sym, exc_info=True)
         prompt = build_prompt(
             indicator_results, overall,
             news_sentiment=news, news_articles=articles,
             market_data=market_data,
+            company_info=company_info,
         )
         text = await llm_analyze(prompt)
         result = {

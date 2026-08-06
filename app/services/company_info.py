@@ -31,7 +31,9 @@ logger = logging.getLogger("vexarium.company")
 CACHE_TTL_COMPANY = 12 * 3600
 
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+    # Windows Chrome UA: Yahoo rate-limits/429s the macOS UA from datacenter
+    # IPs (Render). The Windows UA is accepted and returns full data.
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 }
 _HTTP_TIMEOUT = 12.0
 
