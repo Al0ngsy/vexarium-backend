@@ -129,6 +129,49 @@ def test_graceful_fallback_when_summary_missing():
     assert info.get("pe_ratio") is None
 
 
+def test_stockanalysis_fallback_when_quote_summary_fails():
+    """When Yahoo quoteSummary is blocked, stockanalysis.com fills the gaps."""
+    sa_html = (
+        '<a href="/stocks/aapl/market-cap/" class="dothref text-default">Market Cap</a>'
+        '<!--]--></td><td class="x">4.54T <!----><span class="rg">+51.1%</span>'
+        '<a href="/stocks/aapl/revenue/" class="dothref text-default">Revenue (ttm)</a>'
+        '<!--]--></td><td class="x">466.82B'
+        '<td class="whitespace-nowrap py-[1px] px-0.5 xs:px-1 sm:py-2">52-Week Range</td>'
+        '<td class="whitespace-nowrap py-[1px] px-0.5 text-left x">202.16 - 344.57</td><'
+    )
+    sa_stats_html = (
+        '<span><!---->PE Ratio<!----></span>'
+        '<td class="x" title="35.677">35.68</td>'
+        '<span><!---->Profit Margin<!----></span>'
+        '<td class="x" title="27.619">27.62%</td>'
+        '<span><!---->Return on Equity<!----></span>'
+        '<td class="x" title="148.751">148.75%</td>'
+    )
+
+    def _fake_get(self, url, **kw):
+        if "test/getcrumb" in url or "quoteSummary" in url:
+            raise RuntimeError("Yahoo blocked")
+        if "statistics" in url:
+            r = SimpleNamespace(status_code=200, text=sa_stats_html)
+            r.raise_for_status = lambda: None
+            return r
+        if "stockanalysis.com" in url:
+            r = SimpleNamespace(status_code=200, text=sa_html)
+            r.raise_for_status = lambda: None
+            return r
+        return _resp({"chart": {"result": [{"meta": {}}]}})
+
+    with patch.object(company_info.httpx.Client, "get", _fake_get):
+        info = get_company_info("AAPL")
+    assert info["symbol"] == "AAPL"
+    assert info["market_cap"] == 4.54e12
+    assert info["pe_ratio"] == 35.68  # rounded to 2dp by num()
+    assert info["profit_margin"] == 0.2762  # rounded to 4dp by pct()
+    assert info["roe"] == 1.4875
+    assert info["high_52w"] == 344.57
+    assert info["low_52w"] == 202.16
+
+
 def test_wikipedia_title_keeps_legal_suffix():
     assert _wikipedia_title("Apple Inc.") == "Apple_Inc."
     assert _wikipedia_title("NVIDIA Corporation") == "NVIDIA_Corporation"

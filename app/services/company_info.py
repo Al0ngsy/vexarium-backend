@@ -196,23 +196,51 @@ def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
     Returns a dict with the same field names as the Yahoo path, so the rest of
     the pipeline is source-agnostic. Never raises on partial data.
     """
-    url = f"https://stockanalysis.com/stocks/{symbol.lower()}/"
+    import re
+
+    base = f"https://stockanalysis.com/stocks/{symbol.lower()}/"
+    result: dict = {}
+
     with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
-        resp = client.get(url)
+        # 1. Main page: market cap, revenue, dividend, 52-week range, beta.
+        resp = client.get(base)
         resp.raise_for_status()
         html = resp.text
 
-    import re
+        # Link rows: <a ... class="dothref text-default">Label</a><!--]--></td><td ...>Value
+        rows = re.findall(
+            r'<a href="[^"]*" class="dothref text-default">([^<]+)</a><!--\]--></td>'
+            r'<td[^>]*>([^<]+)<',
+            html,
+        )
+        data: dict[str, str] = {}
+        for label, value in rows:
+            data[label.strip().lower()] = value.strip()
 
-    # Rows look like: <a href="..." class="dothref text-default">Label</a><!--]--></td><td ...>Value <!----><span class="rg">+51.1%</span>
-    rows = re.findall(
-        r'<a href="[^"]*" class="dothref text-default">([^<]+)</a><!--\]--></td>'
-        r'<td[^>]*>([^<]+)<',
-        html,
-    )
-    data: dict[str, str] = {}
-    for label, value in rows:
-        data[label.strip().lower()] = value.strip()
+        # Plain rows: <td ...>Label</td><td ...>Value
+        plain = re.findall(
+            r'<td class="whitespace-nowrap py-\[1px\] px-0\.5 xs:px-1 sm:py-2">([^<]+)</td>'
+            r'<td class="whitespace-nowrap py-\[1px\] px-0\.5 text-left[^>]*>([^<]+)<',
+            html,
+        )
+        for label, value in plain:
+            data[label.strip().lower()] = value.strip()
+
+        # 2. Statistics page: P/E, margins, ROE, growth.
+        try:
+            resp2 = client.get(base + "statistics/")
+            resp2.raise_for_status()
+            html2 = resp2.text
+            # <span>Label</span> ... <td title="35.677">35.68</td>
+            stat_rows = re.findall(
+                r'<span><!---->([^<]+)<!----></span>.*?<td[^>]*title="([^"]*)"[^>]*>',
+                html2,
+                re.DOTALL,
+            )
+            for label, value in stat_rows:
+                data[label.strip().lower()] = value.strip()
+        except Exception:
+            pass
 
     def num(label: str) -> float | None:
         v = data.get(label)
@@ -242,7 +270,6 @@ def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
         except ValueError:
             return None
 
-    result: dict = {}
     name = data.get("company name") or data.get("name")
     if name:
         result["name"] = name
@@ -252,6 +279,9 @@ def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
     pe = num("pe ratio")
     if pe:
         result["pe_ratio"] = pe
+    fpe = num("forward pe")
+    if fpe:
+        result["forward_pe"] = fpe
     ps = num("ps ratio")
     if ps:
         result["ps_ratio"] = ps
@@ -261,9 +291,15 @@ def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
     dy = pct("dividend yield")
     if dy is not None:
         result["dividend_yield"] = dy
+    pr = pct("payout ratio")
+    if pr is not None:
+        result["payout_ratio"] = pr
     pm = pct("profit margin")
     if pm is not None:
         result["profit_margin"] = pm
+    gm = pct("gross margin")
+    if gm is not None:
+        result["gross_margin"] = gm
     roe = pct("return on equity")
     if roe is not None:
         result["roe"] = roe
@@ -273,6 +309,12 @@ def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
     rev = num("revenue (ttm)")
     if rev:
         result["revenue_ttm"] = rev
+    shares = num("shares outstanding")
+    if shares:
+        result["shares_outstanding"] = shares
+    ed = data.get("earnings date")
+    if ed:
+        result["next_earnings_date"] = ed
     # 52-week range: "202.16 - 344.57"
     rng = data.get("52-week range")
     if rng:
