@@ -28,7 +28,7 @@ backend/
 │   │                         #   portfolio, trades, billing
 │   ├── services/             # alpaca_client, indicator_engine, verdicts, options_analyzer,
 │   │                         #   strategy_engine, stance, ai_analyzer, news_service,
-│   │                         #   cache, auth, stripe_service, worker
+│   │                         #   cache, auth, stripe_service, company_info
 │   ├── middleware/           # rate_limit, validation, tier_gating, logging
 │   ├── schemas/              # pydantic response/request models
 │   ├── models/               # SQLAlchemy models (User, Trade)
@@ -109,7 +109,7 @@ All routes under `/api/v1`:
 ## Docker
 
 ```bash
-docker compose up --build    # api + worker + postgres + redis
+docker compose up --build    # api + postgres + redis
 docker compose config        # validate
 ```
 
@@ -140,7 +140,7 @@ sudo usermod -aG docker $USER   # then re-login
 # clone and run the stack
 git clone https://github.com/Al0ngsy/vexarium-backend.git && cd vexarium-backend
 cp .env.example .env    # fill real secrets; VEXARIUM_ENV=production
-docker compose up -d --build            # api :8000, worker, postgres, redis
+docker compose up -d --build            # api :8000, postgres, redis
 ```
 
 Then put **Caddy** in front for TLS + reverse-proxy:
