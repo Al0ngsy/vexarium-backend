@@ -60,22 +60,12 @@ class Settings(BaseSettings):
     # per symbol, so the limit only throttles abuse, not legit use).
     rate_limit_ai: int = 10
 
-    # --- Featured symbols (Pro-preview) ---
-    # Symbols that show the Pro AI analysis free as a conversion teaser.
-    # The AI result is cached per-symbol-per-day, so this is cheap to serve.
-    featured_symbols: str = "AAPL,MSFT,TSLA,SPY,NVDA,AMZN,GOOGL,META"
-
     @property
     def cors_origin_list(self) -> list[str]:
         """Parse `cors_origins` into a list, splitting on commas."""
         if not self.cors_origins:
             return []
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-
-    @property
-    def featured_symbol_list(self) -> list[str]:
-        """Parse `featured_symbols` into an uppercase list."""
-        return [s.strip().upper() for s in self.featured_symbols.split(",") if s.strip()]
 
     @model_validator(mode="after")
     def _check_production_jwt(self):
