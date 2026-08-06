@@ -26,7 +26,10 @@ async def cache_set(key: str, value: Any, ttl: int = 3600) -> None:
         import redis.asyncio as aioredis
         client = aioredis.from_url(settings.redis_url, decode_responses=True)
         try:
-            await client.set(key, json.dumps(value), ex=ttl)
+            # default=str: news articles (and other payloads) can contain
+            # datetime objects from model_dump() — without this, json.dumps
+            # raises and the value is silently never cached (AI/news keys).
+            await client.set(key, json.dumps(value, default=str), ex=ttl)
         except Exception:
             pass
         finally:

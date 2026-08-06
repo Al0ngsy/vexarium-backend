@@ -20,10 +20,10 @@ class Settings(BaseSettings):
     alpaca_secret_key: str = ""
     alpaca_paper: bool = True
 
-    # --- LLM (DeepSeek-compatible OpenAI endpoint) ---
-    llm_base_url: str = "https://api.deepseek.com/v1"
+    # --- LLM (OpenCode Go — OpenAI-compatible endpoint) ---
+    llm_base_url: str = "https://opencode.ai/zen/go/v1"
     llm_api_key: str = ""
-    llm_model: str = "deepseek-chat"
+    llm_model: str = "deepseek-v4-flash"
 
     # --- CORS ---
     cors_origins: str = "http://localhost:5173"

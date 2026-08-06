@@ -28,6 +28,37 @@ async def test_cache_set_get():
 
 
 @pytest.mark.asyncio
+async def test_cache_set_with_datetime(monkeypatch):
+    """Payloads with datetime objects (news articles from model_dump) must
+    serialize in the Redis path — previously json.dumps raised inside the
+    swallowed except, so the value was silently never cached (AI/news keys)."""
+    from datetime import datetime, timezone
+
+    captured = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None):
+            captured["key"], captured["value"] = key, value
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    payload = {
+        "headline": "AAPL surges",
+        "published_at": datetime(2026, 8, 6, tzinfo=timezone.utc),
+    }
+    await cache_set("ai:AAPL:2026-08-06", payload, ttl=86400)
+    assert captured["key"] == "ai:AAPL:2026-08-06"
+    assert captured["value"].startswith('{"headline": "AAPL surges"')
+    assert captured["value"].endswith("}")  # serialized without raising
+
+
+@pytest.mark.asyncio
 async def test_cache_get_missing():
     assert await cache_get("does-not-exist") is None
 

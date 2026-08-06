@@ -57,7 +57,7 @@ cp .env.example .env   # fill in your keys
 |---|---|---|
 | `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | — | Alpaca market-data credentials (paper keys work) |
 | `ALPACA_PAPER` | `true` | Use paper-trading endpoints |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | — / deepseek / deepseek-chat | AI analysis provider (OpenAI-compatible) |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | — / https://opencode.ai/zen/go/v1 / deepseek-v4-flash | AI analysis provider (OpenAI-compatible) |
 | `JWT_SECRET` | `change-me-in-production` | **Must be set in production** (startup fails if `VEXARIUM_ENV=production` + placeholder) |
 | `JWT_EXPIRY_HOURS` | `24` | Access-token lifetime |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | — | Stripe billing |
