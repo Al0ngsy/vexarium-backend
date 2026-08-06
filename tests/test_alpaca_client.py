@@ -215,25 +215,66 @@ class TestOptionSnapshot:
 
 
 class TestNews:
-    def test_returns_list(self, client):
+    def test_returns_list(self, client, monkeypatch):
         article = SimpleNamespace(
             id=1,
             model_dump=lambda: {"headline": "Hello"},
         )
         client._news.get_news.return_value = SimpleNamespace(data={"news": [article]})
+        monkeypatch.setattr(client, "_fetch_google_news", lambda *a, **k: [])
 
         result = client.get_news("AAPL")
 
         assert isinstance(result, list)
         assert result == [{"headline": "Hello"}]
 
-    def test_empty_returns_empty_list(self, client):
+    def test_empty_returns_empty_list(self, client, monkeypatch):
         client._news.get_news.return_value = SimpleNamespace(data=[])
+        monkeypatch.setattr(client, "_fetch_google_news", lambda *a, **k: [])
 
         assert client.get_news("AAPL") == []
 
-    def test_sdk_error_raises_alpaca_error(self, client):
+    def test_sdk_error_raises_alpaca_error(self, client, monkeypatch):
         client._news.get_news.side_effect = Exception("boom")
+        monkeypatch.setattr(client, "_fetch_google_news", lambda *a, **k: [])
 
         with pytest.raises(AlpacaError):
             client.get_news("AAPL")
+
+    def test_merges_google_news_sources(self, client, monkeypatch):
+        """Alpaca (Benzinga) + Google News RSS are interleaved so the feed
+        shows multiple outlets, not just Benzinga."""
+        article = SimpleNamespace(
+            id=1,
+            model_dump=lambda: {"headline": "AAPL beats", "source": "benzinga"},
+        )
+        client._news.get_news.return_value = SimpleNamespace(data={"news": [article]})
+        monkeypatch.setattr(
+            client,
+            "_fetch_google_news",
+            lambda *a, **k: [
+                {"headline": "AAPL rally", "source": "Reuters"},
+                {"headline": "AAPL analysis", "source": "Seeking Alpha"},
+            ],
+        )
+
+        result = client.get_news("AAPL")
+
+        sources = [a.get("source") for a in result]
+        assert "benzinga" in sources
+        assert "Reuters" in sources
+        assert "Seeking Alpha" in sources
+        assert len(result) == 3
+
+    def test_google_news_fallback_on_alpaca_error(self, client, monkeypatch):
+        """If Alpaca news is down, Google News RSS alone still serves."""
+        client._news.get_news.side_effect = Exception("boom")
+        monkeypatch.setattr(
+            client,
+            "_fetch_google_news",
+            lambda *a, **k: [{"headline": "AAPL news", "source": "Reuters"}],
+        )
+
+        result = client.get_news("AAPL")
+
+        assert result == [{"headline": "AAPL news", "source": "Reuters"}]

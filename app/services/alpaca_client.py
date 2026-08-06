@@ -1,8 +1,12 @@
 import asyncio
 import io
 import logging
+import re
 import threading
+import urllib.parse
+import xml.etree.ElementTree as ET
 import pandas as pd
+import httpx
 from datetime import datetime, timedelta, date
 from typing import Optional
 from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDataClient
@@ -531,6 +535,57 @@ class AlpacaClient:
             'greeks': greeks_dict,
         }
 
+    # Google News RSS aggregates all major outlets (Reuters, CNBC, Seeking
+    # Alpha, MarketBeat, ...) with no API key — complements Alpaca's free feed
+    # (which only carries Benzinga). Windows UA avoids 429s from datacenter IPs.
+    _GNEWS_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    }
+
+    def _fetch_google_news(self, symbol: str, limit: int = 6) -> list:
+        """Keyless multi-source headlines via Google News RSS. Never raises."""
+        try:
+            q = urllib.parse.quote(f"{symbol} stock")
+            url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+            resp = httpx.get(url, headers=self._GNEWS_HEADERS, timeout=10, follow_redirects=True)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.text)
+            items = root.findall(".//item")[:limit]
+            out = []
+            for it in items:
+                title_el = it.find("title")
+                link_el = it.find("link")
+                date_el = it.find("pubDate")
+                src_el = it.find("source")
+                desc_el = it.find("description")
+                headline = (title_el.text or "").strip() if title_el is not None else ""
+                if not headline:
+                    continue
+                # Google News links are redirect URLs; the real article lives at
+                # the first url= target — keep the short form for the browser.
+                link = (link_el.text or "").strip() if link_el is not None else ""
+                src = (src_el.text or "").strip() if src_el is not None else ""
+                published = (date_el.text or "").strip() if date_el is not None else ""
+                summary = ""
+                if desc_el is not None and desc_el.text:
+                    # description contains a snippet + "The post ... appeared first on X"
+                    summary = re.sub(r"<[^>]+>", "", desc_el.text).strip()
+                    summary = re.sub(r"\s*The post .*? appeared first on .*\.?\s*$", "", summary)
+                out.append({
+                    "headline": headline,
+                    "source": src or "Google News",
+                    "url": link,
+                    "summary": summary[:400],
+                    "created_at": published,
+                    "symbols": [symbol],
+                    "id": None,
+                })
+            return out
+        except Exception:
+            logger.warning("Google News RSS failed for %s", symbol, exc_info=True)
+            return []
+
     def get_news(self, symbol: str, limit: int = 10) -> list:
         key = news_key(symbol)
         cached = _run_coro(cache_get(key))
@@ -551,13 +606,29 @@ class AlpacaClient:
             for article in articles:
                 d = article.model_dump() if hasattr(article, "model_dump") else dict(article)
                 result.append(d)
-            _run_coro(cache_set(key, result, ttl=CACHE_TTL_NEWS))
-            return result
+            # Merge in multi-source headlines (Google News RSS) and interleave
+            # them with the Alpaca/Benzinga items so the feed isn't one outlet.
+            extra = self._fetch_google_news(symbol, limit=6)
+            merged = []
+            i, j = 0, 0
+            while i < len(result) or j < len(extra):
+                if j < len(extra) and (i >= len(result) or (i + j) % 3 == 2):
+                    merged.append(extra[j]); j += 1
+                elif i < len(result):
+                    merged.append(result[i]); i += 1
+                elif j < len(extra):
+                    merged.append(extra[j]); j += 1
+            _run_coro(cache_set(key, merged, ttl=CACHE_TTL_NEWS))
+            return merged
         except Exception as e:
             logger.error("Alpaca get_news failed for %s: %s", symbol, e)
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
+            # Alpaca news is down: fall back to Google News RSS alone.
+            extra = self._fetch_google_news(symbol, limit=8)
+            if extra:
+                return extra
             raise AlpacaError(f"Failed to fetch news for {symbol}")
 
     def get_market_calendar(self, start: str = None, end: str = None) -> list:
