@@ -176,7 +176,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: di
     async def _stream_text(text: str, chunk_size: int = 24, delay: float = 0.03):
         """Replay stored text in small chunks (illusion of live generation)."""
         for i in range(0, len(text), chunk_size):
-            yield json.dumps({"chunk": text[i:i + chunk_size]}) + "\n\n"
+            yield "data: " + json.dumps({"chunk": text[i:i + chunk_size]}) + "\n\n"
             await asyncio.sleep(delay)
 
     async def event_generator():
@@ -185,7 +185,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: di
             if cached:
                 async for ev in _stream_text(cached["analysis"]):
                     yield ev
-                yield json.dumps({"done": True}) + "\n\n"
+                yield "data: " + json.dumps({"done": True}) + "\n\n"
                 return
 
             # Single-flight (same as the non-streaming endpoint).
@@ -200,35 +200,35 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: di
                     if cached:
                         async for ev in _stream_text(cached["analysis"]):
                             yield ev
-                        yield json.dumps({"done": True}) + "\n\n"
+                        yield "data: " + json.dumps({"done": True}) + "\n\n"
                         return
                     if not await lock_held(lock_key):
                         break
                 if not await lock_acquire(lock_key, ttl=180):
-                    yield json.dumps({"chunk": "AI analysis in progress. Please retry in a moment."}) + "\n\n"
-                    yield json.dumps({"done": True}) + "\n\n"
+                    yield "data: " + json.dumps({"chunk": "AI analysis in progress. Please retry in a moment."}) + "\n\n"
+                    yield "data: " + json.dumps({"done": True}) + "\n\n"
                     return
 
             _, _, _, news, articles, market_data, _, prompt = _build_context(sym)
             parts = []
             async for token in analyze_stream(prompt):
                 parts.append(token)
-                yield json.dumps({"chunk": token}) + "\n\n"
+                yield "data: " + json.dumps({"chunk": token}) + "\n\n"
             text = "".join(parts)
             if not text or text.startswith("AI analysis"):
-                yield json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
-                yield json.dumps({"done": True}) + "\n\n"
+                yield "data: " + json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
+                yield "data: " + json.dumps({"done": True}) + "\n\n"
                 return
             result = _make_result(sym, text, news, articles, market_data, is_preview)
             await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
-            yield json.dumps({"done": True}) + "\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
         except ValueError as e:
-            yield json.dumps({"chunk": str(e)}) + "\n\n"
-            yield json.dumps({"done": True}) + "\n\n"
+            yield "data: " + json.dumps({"chunk": str(e)}) + "\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
         except Exception:
             logger.error("AI streaming failed", exc_info=True)
-            yield json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
-            yield json.dumps({"done": True}) + "\n\n"
+            yield "data: " + json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
         finally:
             await lock_release(ai_lock_key(sym))
 

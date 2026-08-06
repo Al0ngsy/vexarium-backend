@@ -230,9 +230,10 @@ async def test_ai_stream_endpoint_cached_replay(monkeypatch):
             async for chunk in resp.aiter_bytes():
                 body += chunk
     text = body.decode()
-    # Multiple chunk events were emitted (the illusion of streaming).
-    assert '{"chunk":' in text
-    assert '{"done": true}' in text
+    # Multiple chunk events were emitted (the illusion of streaming), framed
+    # as proper SSE (data: prefix) so the frontend parser can consume them.
+    assert 'data: {"chunk":' in text
+    assert 'data: {"done": true}' in text
     assert "## Summary" in text
 
 @pytest.mark.asyncio
