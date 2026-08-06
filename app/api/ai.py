@@ -46,6 +46,50 @@ def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
         )
 
 
+def _build_context(sym: str) -> tuple:
+    """Assemble everything the LLM prompt needs for a symbol.
+
+    Returns (df, indicator_results, overall, news, articles, market_data,
+    company_info, prompt). Raises on upstream failures the caller must handle.
+    """
+    client = AlpacaClient()
+    df = client.get_stock_bars(sym)
+    if df.empty:
+        raise ValueError("No data available.")
+    engine = create_pro_engine()
+    indicator_results = [r.to_dict() for r in engine.compute_all(df)]
+    overall = aggregate(indicator_results)
+    news, articles = _fetch_news(client, sym)
+    # Comprehensive context: live price, day change, 52-week range, YTD change.
+    market_data = client.get_market_snapshot(sym, df)
+    # Company fundamentals (free keyless Yahoo) — enriches the briefing.
+    company_info = None
+    try:
+        company_info = get_company_info(sym)
+    except Exception:
+        logger.error("Company info failed for %s", sym, exc_info=True)
+    prompt = build_prompt(
+        indicator_results, overall,
+        news_sentiment=news, news_articles=articles,
+        market_data=market_data,
+        company_info=company_info,
+    )
+    return df, indicator_results, overall, news, articles, market_data, company_info, prompt
+
+
+def _make_result(sym: str, text: str, news, articles, market_data, is_preview: bool) -> dict:
+    return {
+        "symbol": sym,
+        "analysis": text,
+        "model": settings.llm_model,
+        "analyzed_at": datetime.now(timezone.utc).isoformat(),
+        "news_sentiment": news,
+        "news_articles": articles[:8],
+        "market": market_data,
+        "is_preview": is_preview,
+    }
+
+
 @router.post("/ai")
 @limiter.limit(f"{settings.rate_limit_ai}/minute")
 async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
@@ -86,51 +130,117 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
                 if not await lock_acquire(lock_key, ttl=180):
                     return {"symbol": sym, "analysis": "AI analysis in progress. Please retry in a moment.", "model": settings.llm_model}
 
-        client = AlpacaClient()
-        df = client.get_stock_bars(sym)
-        if df.empty:
-            return {"symbol": sym, "analysis": "No data available.", "model": settings.llm_model}
-        engine = create_pro_engine()
-        indicator_results = [r.to_dict() for r in engine.compute_all(df)]
-        overall = aggregate(indicator_results)
-        news, articles = _fetch_news(client, sym)
-        # Comprehensive context: live price, day change, 52-week range, YTD change.
-        market_data = client.get_market_snapshot(sym, df)
-        # Company fundamentals (free keyless Yahoo) — enriches the briefing.
-        company_info = None
-        try:
-            company_info = get_company_info(sym)
-        except Exception:
-            logger.error("Company info failed for %s", sym, exc_info=True)
-        prompt = build_prompt(
-            indicator_results, overall,
-            news_sentiment=news, news_articles=articles,
-            market_data=market_data,
-            company_info=company_info,
-        )
+        _, _, _, news, articles, market_data, _, prompt = _build_context(sym)
         text = await llm_analyze(prompt)
         # Never cache failure text: a transient LLM outage must not poison the
         # 24h per-symbol cache (the fallback would be served to every user all
         # day even after the provider recovers).
         if text.startswith("AI analysis"):
             return {"symbol": sym, "analysis": text, "model": settings.llm_model}
-        result = {
-            "symbol": sym,
-            "analysis": text,
-            "model": settings.llm_model,
-            "analyzed_at": datetime.now(timezone.utc).isoformat(),
-            "news_sentiment": news,
-            "news_articles": articles[:8],
-            "market": market_data,
-            "is_preview": is_preview,
-        }
+        result = _make_result(sym, text, news, articles, market_data, is_preview)
         await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
         return result
+    except ValueError as e:
+        return {"symbol": sym, "analysis": str(e), "model": settings.llm_model}
     except Exception:
         logger.error("AI analysis failed", exc_info=True)
         return {"symbol": sym, "analysis": "AI analysis temporarily unavailable.", "model": settings.llm_model}
     finally:
         await lock_release(ai_lock_key(sym))
+
+
+@router.post("/ai/stream")
+@limiter.limit(f"{settings.rate_limit_ai}/minute")
+async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
+    """SSE streaming AI analysis.
+
+    - Uncached: streams live tokens from the LLM as they arrive (the answer
+      appears progressively), then caches the full result for 24h.
+    - Cached: replays the stored answer in small chunks with tiny delays — the
+      illusion of streaming, so the UI behaves identically either way.
+
+    Events: `data: {"chunk": "..."}\\n\\n` ... then `data: {"done": true}\\n\\n`.
+    """
+    from fastapi.responses import StreamingResponse
+    from ..services.ai_analyzer import analyze_stream
+
+    sym = validate_symbol(body.symbol)
+    is_preview = access.get("is_preview", False)
+
+    async def _cached_or_none():
+        cached = await cache_get(ai_key(sym))
+        if cached and is_preview:
+            cached["is_preview"] = True
+        return cached
+
+    async def _stream_text(text: str, chunk_size: int = 24, delay: float = 0.03):
+        """Replay stored text in small chunks (illusion of live generation)."""
+        for i in range(0, len(text), chunk_size):
+            yield json.dumps({"chunk": text[i:i + chunk_size]}) + "\n\n"
+            await asyncio.sleep(delay)
+
+    async def event_generator():
+        try:
+            cached = await _cached_or_none()
+            if cached:
+                async for ev in _stream_text(cached["analysis"]):
+                    yield ev
+                yield json.dumps({"done": True}) + "\n\n"
+                return
+
+            # Single-flight (same as the non-streaming endpoint).
+            lock_key = ai_lock_key(sym)
+            acquired = await lock_acquire(lock_key, ttl=180)
+            if not acquired:
+                waited = 0
+                while waited < 120:
+                    await asyncio.sleep(2)
+                    waited += 2
+                    cached = await _cached_or_none()
+                    if cached:
+                        async for ev in _stream_text(cached["analysis"]):
+                            yield ev
+                        yield json.dumps({"done": True}) + "\n\n"
+                        return
+                    if not await lock_held(lock_key):
+                        break
+                if not await lock_acquire(lock_key, ttl=180):
+                    yield json.dumps({"chunk": "AI analysis in progress. Please retry in a moment."}) + "\n\n"
+                    yield json.dumps({"done": True}) + "\n\n"
+                    return
+
+            _, _, _, news, articles, market_data, _, prompt = _build_context(sym)
+            parts = []
+            async for token in analyze_stream(prompt):
+                parts.append(token)
+                yield json.dumps({"chunk": token}) + "\n\n"
+            text = "".join(parts)
+            if not text or text.startswith("AI analysis"):
+                yield json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
+                yield json.dumps({"done": True}) + "\n\n"
+                return
+            result = _make_result(sym, text, news, articles, market_data, is_preview)
+            await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
+            yield json.dumps({"done": True}) + "\n\n"
+        except ValueError as e:
+            yield json.dumps({"chunk": str(e)}) + "\n\n"
+            yield json.dumps({"done": True}) + "\n\n"
+        except Exception:
+            logger.error("AI streaming failed", exc_info=True)
+            yield json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
+            yield json.dumps({"done": True}) + "\n\n"
+        finally:
+            await lock_release(ai_lock_key(sym))
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/options-strategies")

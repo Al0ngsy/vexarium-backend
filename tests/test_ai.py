@@ -122,6 +122,119 @@ async def test_analyze_skip_ai():
     result = await analyze("test prompt", skip_ai=True)
     assert "AI analysis unavailable" in result
 
+
+@pytest.mark.asyncio
+async def test_analyze_stream_yields_tokens():
+    """analyze_stream yields only `content` deltas (not reasoning_content)."""
+    import app.services.ai_analyzer as mod
+
+    lines = [
+        'data: {"choices":[{"delta":{"content":null,"reasoning_content":"thinking..."}}]}',
+        'data: {"choices":[{"delta":{"content":"Hello "}}]}',
+        'data: {"choices":[{"delta":{"content":"world"}}]}',
+        'data: {"choices":[{"delta":{"content":null,"finish_reason":"stop"}}]}',
+        "data: [DONE]",
+    ]
+
+    class StubResp:
+        def raise_for_status(self):
+            pass
+
+        async def aiter_lines(self):
+            for l in lines:
+                yield l
+
+    class StubStream:
+        async def __aenter__(self):
+            return StubResp()
+
+        async def __aexit__(self, *a):
+            return False
+
+    class StubClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def stream(self, *a, **k):
+            return StubStream()
+
+    orig = mod.httpx
+    mod.httpx = type("H", (), {"AsyncClient": StubClient})()
+    try:
+        parts = []
+        async for token in mod.analyze_stream("prompt"):
+            parts.append(token)
+        # reasoning_content is skipped; only content deltas are streamed.
+        assert parts == ["Hello ", "world"]
+    finally:
+        mod.httpx = orig
+
+
+@pytest.mark.asyncio
+async def test_ai_stream_endpoint_cached_replay(monkeypatch):
+    """/ai/stream replays a cached answer chunk-by-chunk (illusion of streaming)."""
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.services import cache as cache_module
+
+    state = {"data": {}}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx:
+                if key in state["data"]:
+                    return False
+                state["data"][key] = "1"
+                return True
+            state["data"][key] = value
+            return True
+
+        async def get(self, key):
+            return state["data"].get(key)
+
+        async def exists(self, key):
+            return 1 if key in state["data"] else 0
+
+        async def delete(self, key):
+            state["data"].pop(key, None)
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    # Pre-populate the AI cache for AAPL.
+    from app.services.cache import ai_key
+    await cache_module.cache_set(
+        ai_key("AAPL"),
+        {"symbol": "AAPL", "analysis": "## Summary\n**Sell.** Cached answer."},
+        ttl=86400,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST", "/api/v1/analysis/ai/stream", json={"symbol": "AAPL"}
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            body = b""
+            async for chunk in resp.aiter_bytes():
+                body += chunk
+    text = body.decode()
+    # Multiple chunk events were emitted (the illusion of streaming).
+    assert '{"chunk":' in text
+    assert '{"done": true}' in text
+    assert "## Summary" in text
+
 @pytest.mark.asyncio
 async def test_analyze_no_api_key():
     # Force an empty key so the fallback path is deterministic regardless of
@@ -268,7 +381,7 @@ async def test_ai_failure_not_cached(monkeypatch):
     df = _make_df()
     with patch("app.api.ai.AlpacaClient") as MockClient, patch(
         "app.api.ai.llm_analyze",
-        new=AsyncMock(return_value="AI analysis temporarily unavailable. Review the technical indicators above."),
+        new=AsyncMock(return_value="AI analysis unavailable. Review the technical indicators manually or come back later."),
     ):
         mock_instance = MockClient.return_value
         mock_instance.get_stock_bars.return_value = df
@@ -278,7 +391,7 @@ async def test_ai_failure_not_cached(monkeypatch):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
             assert resp.status_code == 200
-            assert "temporarily unavailable" in resp.json()["analysis"]
+            assert "unavailable" in resp.json()["analysis"]
             # The AI failure must NOT have been written to the cache
             # (company:AAPL caching is fine and expected).
             assert not any(k.startswith("ai:") for k in captured)

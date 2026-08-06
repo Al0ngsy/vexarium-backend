@@ -115,7 +115,7 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
 
 async def analyze(prompt: str, skip_ai: bool = False) -> str:
     if skip_ai or not settings.llm_api_key:
-        return "AI analysis unavailable. Review the technical indicators above."
+        return "AI analysis unavailable. Review the technical indicators manually or come back later."
     # The provider occasionally returns an empty completion; retry once.
     for attempt in range(2):
         try:
@@ -142,5 +142,53 @@ async def analyze(prompt: str, skip_ai: bool = False) -> str:
                 # empty completion -> try again
         except Exception:
             if attempt == 1:
-                return "AI analysis temporarily unavailable. Review the technical indicators above."
-    return "AI analysis temporarily unavailable. Review the technical indicators above."
+                return "AI analysis temporarily unavailable. Review the technical indicators manually or come back later."
+    return "AI analysis temporarily unavailable. Review the technical indicators manually or come back later."
+
+
+async def analyze_stream(prompt: str, skip_ai: bool = False):
+    """Stream the LLM answer token-by-token (OpenAI-compatible SSE).
+
+    Yields successive content strings; the full answer is the concatenation.
+    Skips the model's internal `reasoning_content` deltas (thinking) — those
+    are not shown to the user. Returns the full text when exhausted (empty
+    string on failure, like a failed non-streaming call).
+    """
+    if skip_ai or not settings.llm_api_key:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            async with client.stream(
+                "POST",
+                f"{settings.llm_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                json={
+                    "model": settings.llm_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": True,
+                    "max_tokens": 8192,
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except Exception:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    # Skip reasoning_content (the model's hidden thinking) —
+                    # only stream the actual answer.
+                    if content:
+                        yield content
+    except Exception:
+        # A streaming failure falls back to the non-streaming path upstream.
+        return
