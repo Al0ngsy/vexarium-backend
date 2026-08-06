@@ -1,5 +1,6 @@
 import pytest
 import json
+from unittest.mock import AsyncMock, patch
 from app.services.news_service import compute_sentiment, get_news_sentiment
 from app.services.ai_analyzer import build_prompt, analyze
 
@@ -239,6 +240,85 @@ async def test_options_strategies_ai_pro_only():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/api/v1/analysis/options-strategies", json={"symbol": "AAPL", "strike": 300})
         assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_ai_failure_not_cached(monkeypatch):
+    """A transient LLM failure must NOT be cached: the fallback text would
+    otherwise poison the 24h per-symbol cache for every user all day."""
+    from unittest.mock import patch, AsyncMock
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.services import cache as cache_module
+
+    captured = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None):
+            captured[key] = value  # record every cache write attempt
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    df = _make_df()
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.api.ai.llm_analyze",
+        new=AsyncMock(return_value="AI analysis temporarily unavailable. Review the technical indicators above."),
+    ):
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_news.return_value = []
+        mock_instance.get_market_snapshot.return_value = {"price": 300.0}
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
+            assert resp.status_code == 200
+            assert "temporarily unavailable" in resp.json()["analysis"]
+            # The AI failure must NOT have been written to the cache
+            # (company:AAPL caching is fine and expected).
+            assert not any(k.startswith("ai:") for k in captured)
+
+
+@pytest.mark.asyncio
+async def test_ai_success_cached(monkeypatch):
+    """A real analysis IS cached (regression guard for the failure check)."""
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.services import cache as cache_module
+
+    captured = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None):
+            captured["key"], captured["value"] = key, value
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    df = _make_df()
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.api.ai.llm_analyze", new=AsyncMock(return_value="Real analysis. Not financial advice.")
+    ):
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_news.return_value = []
+        mock_instance.get_market_snapshot.return_value = {"price": 300.0}
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
+            assert resp.status_code == 200
+            assert captured["key"].startswith("ai:AAPL:")
+            assert "Real analysis" in captured["value"]
 
 
 @pytest.mark.asyncio

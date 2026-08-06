@@ -77,6 +77,11 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
             company_info=company_info,
         )
         text = await llm_analyze(prompt)
+        # Never cache failure text: a transient LLM outage must not poison the
+        # 24h per-symbol cache (the fallback would be served to every user all
+        # day even after the provider recovers).
+        if text.startswith("AI analysis"):
+            return {"symbol": sym, "analysis": text, "model": settings.llm_model}
         result = {
             "symbol": sym,
             "analysis": text,
