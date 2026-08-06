@@ -120,7 +120,7 @@ def test_build_prompt_key_levels():
 @pytest.mark.asyncio
 async def test_analyze_skip_ai():
     result = await analyze("test prompt", skip_ai=True)
-    assert "not financial advice" in result.lower()
+    assert "AI analysis unavailable" in result
 
 @pytest.mark.asyncio
 async def test_analyze_no_api_key():
@@ -130,7 +130,7 @@ async def test_analyze_no_api_key():
     import app.services.ai_analyzer as analyzer_module
     with patch.object(analyzer_module.settings, "llm_api_key", ""):
         result = await analyze("test prompt", skip_ai=False)
-        assert "not financial advice" in result.lower()
+        assert "AI analysis unavailable" in result
 
 
 # --- AI endpoint tests -----------------------------------------------------
