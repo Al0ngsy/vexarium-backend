@@ -65,15 +65,46 @@ class NewsArticle(BaseModel):
 
 
 class CompanyInfo(BaseModel):
-    """Free, keyless company/ETF profile (Yahoo meta + Wikipedia summary)."""
+    """Free, keyless company/ETF profile + fundamentals (Yahoo + Wikipedia)."""
     symbol: str
+    # Identity
     name: Optional[str] = None
     short_name: Optional[str] = None
     exchange: Optional[str] = None
-    high_52w: Optional[float] = None
-    low_52w: Optional[float] = None
     currency: Optional[str] = None
     description: Optional[str] = None  # plain-English Wikipedia summary
+    # About / operations
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    website: Optional[str] = None
+    headquarters: Optional[str] = None
+    employees: Optional[float] = None
+    founded: Optional[float] = None
+    # Management
+    ceo: Optional[str] = None
+    ceo_title: Optional[str] = None
+    ceo_pay: Optional[float] = None
+    # Market / valuation
+    market_cap: Optional[float] = None
+    shares_outstanding: Optional[float] = None
+    pe_ratio: Optional[float] = None
+    forward_pe: Optional[float] = None
+    ps_ratio: Optional[float] = None
+    pb_ratio: Optional[float] = None
+    high_52w: Optional[float] = None
+    low_52w: Optional[float] = None
+    # Dividend
+    dividend_yield: Optional[float] = None
+    payout_ratio: Optional[float] = None
+    # Performance / profitability (fractions, e.g. 0.63 = 63%)
+    revenue_growth: Optional[float] = None
+    earnings_growth: Optional[float] = None
+    profit_margin: Optional[float] = None
+    gross_margin: Optional[float] = None
+    roe: Optional[float] = None
+    roa: Optional[float] = None
+    # Events
+    next_earnings_date: Optional[str] = None
 
 
 class AnalysisResponse(BaseModel):
