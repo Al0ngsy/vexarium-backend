@@ -436,6 +436,102 @@ async def test_ai_success_cached(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ai_truncated_not_cached(monkeypatch):
+    """An answer missing the disclaimer footer is served but NOT cached —
+    regression for the INTC bug (a 40-char truncated briefing cached 24h)."""
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.services import cache as cache_module
+
+    captured = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None):
+            captured["key"] = key
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    df = _make_df()
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.api.ai.llm_analyze",
+        # Truncated answer — no disclaimer footer (the stream was cut).
+        new=AsyncMock(return_value="## Summary\n**Sell.** Intel is below its "),
+    ):
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_news.return_value = []
+        mock_instance.get_market_snapshot.return_value = {"price": 300.0}
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/analysis/ai", json={"symbol": "INTC"})
+            assert resp.status_code == 200
+            # The partial text IS returned (user sees what we have)...
+            assert "Intel is below its" in resp.json()["analysis"]
+            # ...but the truncated AI answer must NOT have been cached
+            # (company:INTC caching is fine and expected).
+            assert not any(k.startswith("ai:") for k in captured)
+
+
+@pytest.mark.asyncio
+async def test_ai_stream_interrupted_not_cached(monkeypatch):
+    """A mid-stream LLM failure streams what arrived but never caches it —
+    the INTC 40-char-cached regression, streaming flavor."""
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.services import cache as cache_module
+
+    captured = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None):
+            captured["key"] = key
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    async def interrupted_stream(prompt):
+        yield "## Summary\n"
+        yield "**Sell.** Intel is below its "
+        raise RuntimeError("LLM connection dropped")
+
+    df = _make_df()
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.services.ai_analyzer.analyze_stream", new=interrupted_stream
+    ):
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_news.return_value = []
+        mock_instance.get_market_snapshot.return_value = {"price": 300.0}
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with client.stream(
+                "POST", "/api/v1/analysis/ai/stream", json={"symbol": "INTC"}
+            ) as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+    text = body.decode()
+    # The partial chunks were streamed to the client...
+    assert "Intel is below its" in text
+    assert 'data: {"done": true}' in text
+    # ...but the interrupted answer must NOT have been cached
+    # (company:INTC caching is fine and expected).
+    assert not any(k.startswith("ai:") for k in captured)
+
+
+@pytest.mark.asyncio
 async def test_ai_single_flight_concurrent(monkeypatch):
     """Two concurrent requests for the same symbol must fire ONE LLM call —
     the second waits for the first and reuses its cached result."""

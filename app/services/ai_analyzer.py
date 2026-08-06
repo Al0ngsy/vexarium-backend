@@ -194,5 +194,7 @@ async def analyze_stream(prompt: str, skip_ai: bool = False):
                     if content:
                         yield content
     except Exception:
-        # A streaming failure falls back to the non-streaming path upstream.
-        return
+        # Propagate: a mid-stream failure must NOT look like a completed
+        # answer — the caller would otherwise cache the partial text (the
+        # INTC bug: a 40-char truncated briefing was cached for 24h).
+        raise

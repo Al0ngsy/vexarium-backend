@@ -137,6 +137,12 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
         # day even after the provider recovers).
         if text.startswith("AI analysis"):
             return {"symbol": sym, "analysis": text, "model": settings.llm_model}
+        # Completeness guard: only cache answers that look finished. The model
+        # is instructed to end with the disclaimer footer; a truncated response
+        # (max_tokens hit / interrupted stream) won't contain it.
+        if "not financial advice" not in text.lower():
+            logger.warning("AI answer for %s missing disclaimer footer — not caching (%d chars)", sym, len(text))
+            return _make_result(sym, text, news, articles, market_data, is_preview)
         result = _make_result(sym, text, news, articles, market_data, is_preview)
         await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
         return result
@@ -211,12 +217,27 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: di
 
             _, _, _, news, articles, market_data, _, prompt = _build_context(sym)
             parts = []
-            async for token in analyze_stream(prompt):
-                parts.append(token)
-                yield "data: " + json.dumps({"chunk": token}) + "\n\n"
+            try:
+                async for token in analyze_stream(prompt):
+                    parts.append(token)
+                    yield "data: " + json.dumps({"chunk": token}) + "\n\n"
+            except Exception:
+                # Mid-stream failure (LLM error / disconnect): show what
+                # arrived, but NEVER cache the partial text — a truncated
+                # briefing would be served to every user for 24h.
+                logger.error("AI stream interrupted for %s", sym, exc_info=True)
+                yield "data: " + json.dumps({"done": True}) + "\n\n"
+                return
             text = "".join(parts)
             if not text or text.startswith("AI analysis"):
                 yield "data: " + json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
+                yield "data: " + json.dumps({"done": True}) + "\n\n"
+                return
+            # Completeness guard: only cache answers that look finished. The
+            # model is instructed to end with the disclaimer footer; a stream
+            # that stops mid-answer (even without raising) won't contain it.
+            if "not financial advice" not in text.lower():
+                logger.warning("AI answer for %s missing disclaimer footer — not caching (%d chars)", sym, len(text))
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
                 return
             result = _make_result(sym, text, news, articles, market_data, is_preview)
