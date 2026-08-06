@@ -44,7 +44,7 @@ backend/
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-cd backend
+cd <vexarium-backend checkout>
 uv venv .venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[dev]"
@@ -120,12 +120,14 @@ GitHub Actions (`.github/workflows/ci.yml`): backend `pytest` + frontend `yarn c
 ## Deploying the Backend
 
 ### Option A — Render (fastest to start, free tier)
-1. Push the repo to GitHub (`Al0ngsy`).
-2. Render dashboard → **New → Web Service** → connect the repo, root directory `backend`.
-3. **Build command:** `pip install .`
+1. Push the repo to GitHub (`Al0ngsy/vexarium-backend`).
+2. Render dashboard → **New → Web Service** → connect the repo (root = repo root).
+3. **Build command:** `pip install -e .`
 4. **Start command:** `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 5. Add the env vars from `.env.example` (Alpaca keys, `JWT_SECRET`, etc.). Set `VEXARIUM_ENV=production`.
 6. Deploy. A free web service spins down when idle — fine for a demo; upgrade or move to Hetzner for real traffic.
+
+> **Note:** Render auto-deploys on push to `main`. Env-var changes do **not** auto-redeploy — trigger a manual deploy after changing env vars.
 
 ### Option B — Hetzner VPS + Docker (recommended once you have paying users, ~€4/mo)
 On a fresh Hetzner Cloud CX22 (Ubuntu):
@@ -136,8 +138,8 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER   # then re-login
 
 # clone and run the stack
-git clone https://github.com/Al0ngsy/vexarium.git && cd vexarium
-cp backend/.env.example backend/.env    # fill real secrets; VEXARIUM_ENV=production
+git clone https://github.com/Al0ngsy/vexarium-backend.git && cd vexarium-backend
+cp .env.example .env    # fill real secrets; VEXARIUM_ENV=production
 docker compose up -d --build            # api :8000, worker, postgres, redis
 ```
 
