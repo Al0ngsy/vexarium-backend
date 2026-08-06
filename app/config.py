@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # --- Rate limits ---
     rate_limit_free: int = 30
     rate_limit_pro: int = 200
+    # AI is free for everyone: tight per-IP limit (the result is cached 24h
+    # per symbol, so the limit only throttles abuse, not legit use).
+    rate_limit_ai: int = 10
 
     # --- Featured symbols (Pro-preview) ---
     # Symbols that show the Pro AI analysis free as a conversion teaser.

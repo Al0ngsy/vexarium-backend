@@ -20,16 +20,13 @@ logger = logging.getLogger("vexarium.api.ai")
 
 
 async def _ai_access(request: Request, body: AnalysisRequest):
-    """Allow Pro users always; allow free users for featured preview symbols."""
+    """AI is free for everyone (IP rate-limited). No token / tier / featured
+    gating — the endpoint is open and protected by the per-IP rate limit and
+    the 24h per-symbol cache. Tier is still detected (for the Pro-only
+    options-strategies endpoint) but never blocks the main AI endpoint."""
     token = request.query_params.get("token", "")
     user_tier = await get_user_tier(token)
-    if user_tier == "pro":
-        return {"tier": "pro", "is_preview": False}
-    # Free user -> only allowed for featured symbols (Pro preview).
-    sym = validate_symbol(body.symbol).upper()
-    if sym in settings.featured_symbol_list:
-        return {"tier": "free", "is_preview": True}
-    raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access AI analysis.")
+    return {"tier": user_tier, "is_preview": False}
 
 
 def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
@@ -46,7 +43,7 @@ def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
 
 
 @router.post("/ai")
-@limiter.limit(f"{settings.rate_limit_pro}/minute")
+@limiter.limit(f"{settings.rate_limit_ai}/minute")
 async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
     sym = validate_symbol(body.symbol)
     is_preview = access.get("is_preview", False)

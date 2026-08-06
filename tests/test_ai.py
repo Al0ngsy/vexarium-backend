@@ -195,21 +195,21 @@ async def test_ai_endpoint_returns_analysis():
 
 
 @pytest.mark.asyncio
-async def test_ai_endpoint_rejects_free_tier():
-    """AI analysis is a Pro feature — a free (anonymous) user gets 403 for a
-    non-featured symbol. Featured symbols show a free preview instead."""
+async def test_ai_endpoint_open_to_anonymous():
+    """AI is free for everyone now: an anonymous (no-token) request for ANY
+    symbol (featured or not) returns 200 — protected by IP rate limit + cache."""
     from httpx import ASGITransport, AsyncClient
     from app.main import app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/api/v1/analysis/ai", json={"symbol": "XYZ"})
-        assert resp.status_code == 403
-        assert "Upgrade" in resp.json()["detail"]
+        assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_ai_endpoint_featured_symbol_free_preview():
-    """Free users can preview AI for featured symbols (conversion teaser)."""
+async def test_ai_endpoint_any_symbol_free():
+    """No more featured-only preview: any symbol works for anonymous users and
+    is_preview is always False (no conversion teaser)."""
     from unittest.mock import patch, AsyncMock
     from httpx import ASGITransport, AsyncClient
     from app.main import app
@@ -227,7 +227,7 @@ async def test_ai_endpoint_featured_symbol_free_preview():
             resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
             assert resp.status_code == 200
             data = resp.json()
-            assert data["is_preview"] is True
+            assert data["is_preview"] is False
 
 
 @pytest.mark.asyncio
