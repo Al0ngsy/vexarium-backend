@@ -322,6 +322,76 @@ async def test_ai_success_cached(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ai_single_flight_concurrent(monkeypatch):
+    """Two concurrent requests for the same symbol must fire ONE LLM call —
+    the second waits for the first and reuses its cached result."""
+    import asyncio
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app
+    from app.services import cache as cache_module
+
+    state = {"lock": None, "data": {}, "llm_calls": 0}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx:
+                if state["lock"] is not None:
+                    return False
+                state["lock"] = key
+                return True
+            state["data"][key] = value
+            return True
+
+        async def get(self, key):
+            return state["data"].get(key)
+
+        async def exists(self, key):
+            return 1 if state["lock"] is not None else 0
+
+        async def delete(self, key):
+            state["lock"] = None
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    df = _make_df()
+
+    async def slow_llm(prompt):
+        state["llm_calls"] += 1
+        await asyncio.sleep(0.3)  # simulate the 50-90s LLM call (scaled down)
+        return "Single-flight analysis. Not financial advice."
+
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.api.ai.llm_analyze", new=slow_llm
+    ):
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_news.return_value = []
+        mock_instance.get_market_snapshot.return_value = {"price": 300.0}
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Fire both requests concurrently — they race for the same symbol.
+            r1, r2 = await asyncio.gather(
+                client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"}),
+                client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"}),
+            )
+            assert r1.status_code == 200 and r2.status_code == 200
+            d1, d2 = r1.json(), r2.json()
+            assert "Single-flight" in d1["analysis"], f"R1 unexpected: {json.dumps(d1)[:200]}"
+            assert "Single-flight" in d2["analysis"], f"R2 unexpected: {json.dumps(d2)[:200]}"
+            # Only ONE LLM call happened despite two concurrent requests.
+            assert state["llm_calls"] == 1
+            # The lock was released afterwards.
+            assert state["lock"] is None
+
+
+@pytest.mark.asyncio
 async def test_options_strategies_ai_pro_user():
     """A Pro user gets the options-strategies explanation."""
     from unittest.mock import patch, AsyncMock

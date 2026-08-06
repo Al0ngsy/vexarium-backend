@@ -15,6 +15,7 @@ from app.services.cache import (
     cache_get,
     cache_set,
     ai_key,
+    ai_lock_key,
     bars_key,
     news_key,
     quote_key,
@@ -83,6 +84,56 @@ async def test_cache_ttl_expiry(monkeypatch):
     assert await cache_get("ephemeral") is None
 
 
+@pytest.mark.asyncio
+async def test_lock_acquire_release_redis(monkeypatch):
+    """Single-flight lock: first caller wins, second is blocked until release."""
+    state = {"lock": None}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx:
+                if state["lock"] is not None:
+                    return False
+                state["lock"] = key
+                return True
+            return True
+
+        async def exists(self, key):
+            return 1 if state["lock"] is not None else 0
+
+        async def delete(self, key):
+            state["lock"] = None
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(cache_module.settings, "redis_url", "redis://fake")
+    import redis.asyncio as aioredis
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: FakeRedis())
+
+    key = "ai_lock:AAPL:2026-08-06"
+    assert await cache_module.lock_acquire(key, ttl=180) is True
+    assert await cache_module.lock_acquire(key, ttl=180) is False  # held
+    assert await cache_module.lock_held(key) is True
+    await cache_module.lock_release(key)
+    assert await cache_module.lock_held(key) is False
+    assert await cache_module.lock_acquire(key, ttl=180) is True  # free again
+
+
+@pytest.mark.asyncio
+async def test_lock_in_memory_fallback():
+    """Without Redis, the in-memory asyncio lock still serializes."""
+    import asyncio
+
+    key = "ai_lock:TEST:inmemory"
+    assert await cache_module.lock_acquire(key) is True
+    assert await cache_module.lock_acquire(key) is False
+    assert await cache_module.lock_held(key) is True
+    await cache_module.lock_release(key)
+    assert await cache_module.lock_held(key) is False
+
+
 def test_keys():
     assert bars_key("AAPL") == "bars:AAPL"
     assert quote_key("AAPL") == "quote:AAPL"
@@ -91,3 +142,4 @@ def test_keys():
     # ai_key includes today's date
     from datetime import date
     assert ai_key("AAPL") == f"ai:AAPL:{date.today().isoformat()}"
+    assert ai_lock_key("AAPL").startswith("ai_lock:AAPL:")

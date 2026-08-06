@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import asyncio
 import json
 from fastapi import APIRouter, Request, Depends, HTTPException
 from ..middleware.rate_limit import limiter
@@ -11,7 +12,10 @@ from ..services.verdicts import aggregate
 from ..services.ai_analyzer import build_prompt, analyze as llm_analyze
 from ..services.news_service import get_news_sentiment
 from ..services.company_info import get_company_info
-from ..services.cache import cache_get, cache_set, ai_key, CACHE_TTL_AI
+from ..services.cache import (
+    cache_get, cache_set, ai_key, ai_lock_key, CACHE_TTL_AI,
+    lock_acquire, lock_held, lock_release,
+)
 from ..config import settings
 import logging
 
@@ -47,12 +51,40 @@ def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
 async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
     sym = validate_symbol(body.symbol)
     is_preview = access.get("is_preview", False)
-    try:
+
+    async def _cached_or_none():
         cached = await cache_get(ai_key(sym))
+        if cached and is_preview:
+            cached["is_preview"] = True
+        return cached
+
+    try:
+        cached = await _cached_or_none()
         if cached:
-            if is_preview:
-                cached["is_preview"] = True
             return cached
+
+        # Single-flight: only ONE LLM call per symbol at a time. If another
+        # request (same user refreshing, or a different user) is already
+        # generating this symbol, wait for its result instead of firing a
+        # duplicate 50-90s LLM call.
+        lock_key = ai_lock_key(sym)
+        if not await lock_acquire(lock_key, ttl=180):
+            # Someone else is generating — poll for the result (up to ~2 min).
+            waited = 0
+            while waited < 120:
+                await asyncio.sleep(2)
+                waited += 2
+                cached = await _cached_or_none()
+                if cached:
+                    return cached
+                if not await lock_held(lock_key):
+                    # Lock released without a cached result -> the generator
+                    # failed; don't keep waiting, try once ourselves.
+                    break
+            if not cached:
+                # Lock is free now (or the wait timed out): take over.
+                if not await lock_acquire(lock_key, ttl=180):
+                    return {"symbol": sym, "analysis": "AI analysis in progress. Please retry in a moment.", "model": settings.llm_model}
 
         client = AlpacaClient()
         df = client.get_stock_bars(sym)
@@ -97,6 +129,8 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
     except Exception:
         logger.error("AI analysis failed", exc_info=True)
         return {"symbol": sym, "analysis": "AI analysis temporarily unavailable.", "model": settings.llm_model}
+    finally:
+        await lock_release(ai_lock_key(sym))
 
 
 @router.post("/options-strategies")
