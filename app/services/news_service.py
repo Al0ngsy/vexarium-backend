@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 POSITIVE_WORDS = {"beat", "surge", "rally", "profit", "growth", "gain", "rise", "up", "bullish", "upgrade", "strong", "record", "high", "jump", "soar"}
 NEGATIVE_WORDS = {"miss", "drop", "decline", "loss", "fall", "down", "bearish", "downgrade", "weak", "low", "plunge", "crash", "warning", "fear", "sell", "cut"}
 
@@ -33,3 +31,15 @@ def get_news_sentiment(articles: list) -> dict:
         "article_count": len(articles),
         "summary": summary,
     }
+
+
+def fetch_news(client, symbol: str, limit: int = 10) -> tuple[dict, list]:
+    """Fetch recent news. Returns (sentiment_summary, article_list). Never raises."""
+    try:
+        articles = client.get_news(symbol, limit=limit)
+        return get_news_sentiment(articles), articles
+    except Exception:
+        return (
+            {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."},
+            [],
+        )

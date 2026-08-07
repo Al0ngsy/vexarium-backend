@@ -4,6 +4,8 @@ from ..config import settings
 def compute_stance(entry_price: float, current_price: float, trade_type: str = "stock", contract: dict = None) -> dict:
     if entry_price <= 0:
         return {"stance": "HOLD", "reason": "Invalid entry price.", "pnl_pct": 0.0, "take_profit_at": 0.0, "cut_loss_at": 0.0}
+    if not current_price or current_price <= 0:
+        return {"stance": "HOLD", "reason": "No live price available.", "pnl_pct": 0.0, "take_profit_at": 0.0, "cut_loss_at": 0.0}
     pnl_pct = (current_price - entry_price) / entry_price
     take_profit_at = entry_price * (1 + settings.take_profit_threshold)
     cut_loss_at = entry_price * (1 + settings.cut_loss_threshold)

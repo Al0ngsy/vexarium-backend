@@ -27,9 +27,6 @@ class OptionContractSchema(BaseModel):
     theoretical_value: float = 0.0
     spread: float = 0.0
     distance_pct: float = 0.0  # % of underlying price the strike is away
-    # TradingView-style metadata that Alpaca's free tier does NOT provide.
-    volume: Optional[float] = None
-    open_interest: Optional[float] = None
 
 
 class PayoffRow(BaseModel):
@@ -55,7 +52,6 @@ class OptionsPayoffResponse(BaseModel):
     premium: float = 0.0
     breakeven: float = 0.0
     payoff_timeline: list[PayoffRow]
-    is_estimate: bool = True
 
 
 class OptionChanceResponse(BaseModel):
@@ -72,4 +68,3 @@ class OptionChanceResponse(BaseModel):
     prob_itm: float  # 0..1
     expected_value: float  # est. option value at current price
     breakeven: float = 0.0
-    is_estimate: bool = True

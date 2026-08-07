@@ -1,8 +1,6 @@
-import asyncio
 import io
 import logging
 import re
-import threading
 import urllib.parse
 import xml.etree.ElementTree as ET
 import pandas as pd
@@ -22,7 +20,7 @@ from alpaca.trading.requests import GetOptionContractsRequest
 from alpaca.trading.enums import ContractType
 from ..config import settings
 from .cache import (
-    cache_get, cache_set,
+    cache_get, cache_set, run_coro,
     bars_key, quote_key, news_key, option_chain_key,
     CACHE_TTL_BARS, CACHE_TTL_QUOTE, CACHE_TTL_NEWS,
     CACHE_TTL_OPTION_CHAIN,
@@ -105,22 +103,6 @@ def _fetch_yahoo_bars(symbol: str, days: int = 365) -> pd.DataFrame:
     return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
 
 
-def _run_coro(coro):
-    """Run an async cache call whether or not an event loop is active."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    # Running inside an event loop already: execute in a worker thread.
-    result = {}
-    def _worker():
-        result["value"] = asyncio.run(coro)
-    t = threading.Thread(target=_worker)
-    t.start()
-    t.join()
-    return result["value"]
-
-
 class AlpacaClient:
     def __init__(self):
         creds = (settings.alpaca_api_key, settings.alpaca_secret_key)
@@ -131,7 +113,7 @@ class AlpacaClient:
 
     def get_stock_bars(self, symbol: str, days: int = 365) -> pd.DataFrame:
         key = bars_key(symbol)
-        cached = _run_coro(cache_get(key))
+        cached = run_coro(cache_get(key))
         if cached is not None:
             try:
                 df = pd.read_json(io.StringIO(cached))
@@ -159,7 +141,7 @@ class AlpacaClient:
                 # Alpaca. Fall back to keyless Yahoo daily bars before giving up.
                 df = _fetch_yahoo_bars(symbol, days)
                 if not df.empty:
-                    _run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+                    run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
                     return df
                 return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
             rows = []
@@ -173,7 +155,7 @@ class AlpacaClient:
                     'timestamp': bar.timestamp,
                 })
             df = pd.DataFrame(rows)
-            _run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+            run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
             return df
         except Exception as e:
             logger.error("Alpaca get_stock_bars failed for %s: %s", symbol, e)
@@ -183,14 +165,14 @@ class AlpacaClient:
                 # OTC/ADR ticker. Try the Yahoo fallback before giving up.
                 df = _fetch_yahoo_bars(symbol, days)
                 if not df.empty:
-                    _run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+                    run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
                     return df
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
             raise AlpacaError(f"Failed to fetch stock bars for {symbol}")
 
     def get_latest_quote(self, symbol: str) -> dict:
         key = quote_key(symbol)
-        cached = _run_coro(cache_get(key))
+        cached = run_coro(cache_get(key))
         if cached is not None:
             return cached
         try:
@@ -205,7 +187,7 @@ class AlpacaClient:
                 'last_price': float(getattr(quote, 'bid_price', 0) or getattr(quote, 'ask_price', 0) or 0),
                 'timestamp': getattr(quote, 'timestamp', None),
             }
-            _run_coro(cache_set(key, result, ttl=CACHE_TTL_QUOTE))
+            run_coro(cache_set(key, result, ttl=CACHE_TTL_QUOTE))
             return result
         except Exception as e:
             logger.error("Alpaca get_latest_quote failed for %s: %s", symbol, e)
@@ -517,7 +499,7 @@ class AlpacaClient:
         try:
             key = option_chain_key(underlying)
             if use_cache:
-                cached = _run_coro(cache_get(key))
+                cached = run_coro(cache_get(key))
                 if cached is not None:
                     return cached
             results: list = []
@@ -564,7 +546,7 @@ class AlpacaClient:
                     break
                 page_token = token
             if use_cache:
-                _run_coro(cache_set(key, results, ttl=CACHE_TTL_OPTION_CHAIN))
+                run_coro(cache_set(key, results, ttl=CACHE_TTL_OPTION_CHAIN))
             return results
         except Exception as e:
             logger.error("Alpaca get_option_chain failed for %s: %s", underlying, e)
@@ -673,7 +655,7 @@ class AlpacaClient:
 
     def get_news(self, symbol: str, limit: int = 10) -> list:
         key = news_key(symbol)
-        cached = _run_coro(cache_get(key))
+        cached = run_coro(cache_get(key))
         if cached is not None:
             return cached
         try:
@@ -703,7 +685,7 @@ class AlpacaClient:
                     merged.append(result[i]); i += 1
                 elif j < len(extra):
                     merged.append(extra[j]); j += 1
-            _run_coro(cache_set(key, merged, ttl=CACHE_TTL_NEWS))
+            run_coro(cache_set(key, merged, ttl=CACHE_TTL_NEWS))
             return merged
         except Exception as e:
             logger.error("Alpaca get_news failed for %s: %s", symbol, e)

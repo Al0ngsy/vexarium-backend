@@ -23,26 +23,6 @@ def build_price_series(df: pd.DataFrame, limit: int = 120) -> list[dict]:
     return out
 
 
-def build_indicator_series(df: pd.DataFrame, indicator_name: str, values: list[float], limit: int = 120) -> list[dict]:
-    """Return {t, v} points aligned to the tail of the DataFrame.
-
-    `values` is a list of floats the same length as the full df (or the last `limit`).
-    If shorter, it is right-aligned to the tail (indicators often have NaN warm-up).
-    """
-    tail = df.tail(limit)
-    ts_list = []
-    for ts in tail["timestamp"]:
-        ts_list.append(ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10])
-    # right-align values to timestamps
-    if len(values) >= len(ts_list):
-        values = values[-len(ts_list):]
-    out = []
-    for t, v in zip(ts_list, values):
-        if v is not None and not (isinstance(v, float) and pd.isna(v)):
-            out.append({"t": t, "v": round(float(v), 4)})
-    return out
-
-
 def compute_series_for(df: pd.DataFrame, name: str) -> list[float]:
     """Return the full-length indicator series for a known indicator name, or []."""
     import pandas_ta_remake as ta  # type: ignore

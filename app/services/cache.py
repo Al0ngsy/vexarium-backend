@@ -1,6 +1,9 @@
 import asyncio
 import json
+import threading
 from typing import Any, Optional
+
+import redis.asyncio as aioredis
 from cachetools import TTLCache
 
 from ..config import settings
@@ -10,6 +13,47 @@ _ttl_cache = TTLCache(maxsize=1000, ttl=3600)
 # In-memory single-flight locks (fallback when Redis is not configured).
 _locks: dict[str, asyncio.Lock] = {}
 
+_redis_client: Optional[aioredis.Redis] = None
+_redis_url: str = ""
+
+
+def _redis() -> Optional[aioredis.Redis]:
+    """Lazy shared Redis client — one per Redis URL, reused for the process
+    lifetime (redis-py pools connections internally). Rebuilt if the URL
+    changes (tests swap settings.redis_url per case)."""
+    global _redis_client, _redis_url
+    if not settings.redis_url:
+        return None
+    if _redis_client is None or _redis_url != settings.redis_url:
+        _redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        _redis_url = settings.redis_url
+    return _redis_client
+
+
+def run_coro(coro):
+    """Run an async cache call whether or not an event loop is active.
+
+    Returns None on failure (callers treat a failed cache op as a miss).
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    result: dict = {}
+
+    def _worker():
+        try:
+            result["value"] = asyncio.run(coro)
+        except Exception:
+            result["error"] = True
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    if "error" in result:
+        return None
+    return result.get("value")
+
 
 async def lock_acquire(key: str, ttl: int = 120) -> bool:
     """Try to take a distributed single-flight lock (non-blocking).
@@ -18,16 +62,12 @@ async def lock_acquire(key: str, ttl: int = 120) -> bool:
     another request already holds it (and this caller should wait for the
     result). Redis SET NX EX; in-memory asyncio.Lock fallback for local dev.
     """
-    if settings.redis_url:
-        import redis.asyncio as aioredis
-
-        client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    client = _redis()
+    if client is not None:
         try:
             return bool(await client.set(key, "1", nx=True, ex=ttl))
         except Exception:
             return True  # fail-open: if Redis hiccups, let the request proceed
-        finally:
-            await client.aclose()
     lock = _locks.setdefault(key, asyncio.Lock())
     try:
         await asyncio.wait_for(lock.acquire(), timeout=0.01)
@@ -38,32 +78,24 @@ async def lock_acquire(key: str, ttl: int = 120) -> bool:
 
 async def lock_held(key: str) -> bool:
     """Is the single-flight lock currently held by someone?"""
-    if settings.redis_url:
-        import redis.asyncio as aioredis
-
-        client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    client = _redis()
+    if client is not None:
         try:
             return bool(await client.exists(key))
         except Exception:
             return False
-        finally:
-            await client.aclose()
     lock = _locks.get(key)
     return bool(lock and lock.locked())
 
 
 async def lock_release(key: str) -> None:
     """Release a single-flight lock held by this caller."""
-    if settings.redis_url:
-        import redis.asyncio as aioredis
-
-        client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    client = _redis()
+    if client is not None:
         try:
             await client.delete(key)
         except Exception:
             pass
-        finally:
-            await client.aclose()
         return
     lock = _locks.get(key)
     if lock and lock.locked():
@@ -71,23 +103,19 @@ async def lock_release(key: str) -> None:
 
 
 async def cache_get(key: str) -> Optional[Any]:
-    if settings.redis_url:
-        import redis.asyncio as aioredis
-        client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    client = _redis()
+    if client is not None:
         try:
             val = await client.get(key)
             return json.loads(val) if val else None
         except Exception:
             return None
-        finally:
-            await client.aclose()
     return _ttl_cache.get(key)
 
 
 async def cache_set(key: str, value: Any, ttl: int = 3600) -> None:
-    if settings.redis_url:
-        import redis.asyncio as aioredis
-        client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    client = _redis()
+    if client is not None:
         try:
             # default=str: news articles (and other payloads) can contain
             # datetime objects from model_dump() — without this, json.dumps
@@ -95,22 +123,17 @@ async def cache_set(key: str, value: Any, ttl: int = 3600) -> None:
             await client.set(key, json.dumps(value, default=str), ex=ttl)
         except Exception:
             pass
-        finally:
-            await client.aclose()
         return
     _ttl_cache[key] = value
 
 
 async def cache_delete(key: str) -> None:
-    if settings.redis_url:
-        import redis.asyncio as aioredis
-        client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    client = _redis()
+    if client is not None:
         try:
             await client.delete(key)
         except Exception:
             pass
-        finally:
-            await client.aclose()
         return
     _ttl_cache.pop(key, None)
 
@@ -156,8 +179,8 @@ def ai_lock_key(symbol: str) -> str:
     return f"ai_lock:{symbol}:{date.today().isoformat()}"
 
 
-def analysis_key(symbol: str, extended: bool = False) -> str:
+def analysis_key(symbol: str) -> str:
     """Daily analysis result for a symbol. Indicators are computed from daily bars,
     so the computed result only changes once per day -> cache for the whole day."""
     from datetime import date
-    return f"analysis:{'pro:' if extended else ''}{symbol}:{date.today().isoformat()}"
+    return f"analysis:{symbol}:{date.today().isoformat()}"

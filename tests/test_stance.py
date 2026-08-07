@@ -50,3 +50,20 @@ async def test_near_expiry_option_take_profit():
         assert resp.status_code == 200
         data = resp.json()
         assert data["stance"] == "TAKE_PROFIT"
+
+@pytest.mark.asyncio
+async def test_no_current_price_hold():
+    """No current_price -> server falls back to a live quote; if that fails,
+    the stance is HOLD with an honest reason — never a fabricated P/L."""
+    from unittest.mock import patch
+    with patch("app.api.portfolio.AlpacaClient") as MockClient:
+        MockClient.return_value.get_latest_quote.side_effect = Exception("no creds")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/portfolio/stance", json={
+                "symbol": "AAPL", "entry_price": 100.0, "trade_type": "stock"
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["stance"] == "HOLD"
+            assert "No live price" in data["reason"]

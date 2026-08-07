@@ -70,11 +70,3 @@ async def delete_trade(request: Request, trade_id: int, token: str = Query("")):
     uid = await _get_user_id(token)
     if not _repo_instance().delete_trade(uid, trade_id):
         raise HTTPException(status_code=404, detail="Trade not found")
-
-
-@router.post("/stance")
-@limiter.limit(f"{settings.rate_limit_free}/minute")
-async def batch_stance(request: Request, token: str = Query("")):
-    uid = await _get_user_id(token)
-    trades = _repo_instance().list_trades(uid)
-    return {"count": len(trades)}

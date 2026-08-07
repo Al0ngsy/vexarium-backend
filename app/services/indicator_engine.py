@@ -48,7 +48,6 @@ class IndicatorResult:
     name: str
     value: Any  # float | dict | None
     verdict: str
-    tier: str = "free"
     note: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -56,7 +55,6 @@ class IndicatorResult:
             "name": self.name,
             "value": self.value,
             "verdict": self.verdict,
-            "tier": self.tier,
             "note": self.note,
         }
 
@@ -71,7 +69,6 @@ class Indicator:
     name: str
     compute: Callable[[pd.DataFrame], Any]
     verdict: Callable[[Any], str]
-    tier: str = "free"
     min_rows: int = 0  # minimum rows required for a valid computation
 
     def evaluate(self, df: pd.DataFrame) -> IndicatorResult:
@@ -81,7 +78,6 @@ class Indicator:
                 name=self.name,
                 value=None,
                 verdict="hold",
-                tier=self.tier,
                 note=f"insufficient data: have {len(df)} rows, need {self.min_rows}",
             )
         try:
@@ -92,7 +88,6 @@ class Indicator:
                 name=self.name,
                 value=None,
                 verdict="hold",
-                tier=self.tier,
                 note=f"compute error: {exc}",
             )
         if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -100,7 +95,6 @@ class Indicator:
                 name=self.name,
                 value=None,
                 verdict="hold",
-                tier=self.tier,
                 note="no value produced",
             )
         try:
@@ -112,7 +106,6 @@ class Indicator:
             name=self.name,
             value=value,
             verdict=verdict,
-            tier=self.tier,
         )
 
 
@@ -133,9 +126,6 @@ class IndicatorEngine:
         """Add (or replace) an indicator in the registry."""
         self._registry[indicator.name] = indicator
         logger.debug("Registered indicator: %s", indicator.name)
-
-    def unregister(self, name: str) -> None:
-        self._registry.pop(name, None)
 
     @property
     def indicators(self) -> dict[str, Indicator]:
@@ -160,7 +150,6 @@ class IndicatorEngine:
                         name=name,
                         value=None,
                         verdict="hold",
-                        tier=indicator.tier,
                         note=f"evaluate error: {exc}",
                     )
                 )
@@ -168,7 +157,7 @@ class IndicatorEngine:
 
 
 # ---------------------------------------------------------------------------
-# Core indicators (all tier="free")
+# Core indicators
 # ---------------------------------------------------------------------------
 
 
@@ -201,7 +190,6 @@ RSIIndicator = Indicator(
     name="RSI(14)",
     compute=_rsi_compute,
     verdict=_rsi_verdict,
-    tier="free",
     min_rows=15,
 )
 
@@ -241,7 +229,6 @@ SMAEMAIndicator = Indicator(
     name="SMA(50)/EMA(200)",
     compute=_sma_ema_compute,
     verdict=_sma_ema_verdict,
-    tier="free",
     min_rows=201,
 )
 
@@ -290,7 +277,6 @@ MACDIndicator = Indicator(
     name="MACD(12,26,9)",
     compute=_macd_compute,
     verdict=_macd_verdict,
-    tier="free",
     min_rows=35,
 )
 
@@ -339,7 +325,6 @@ BollingerIndicator = Indicator(
     name="Bollinger(20,2)",
     compute=_bbands_compute,
     verdict=_bbands_verdict,
-    tier="free",
     min_rows=21,
 )
 
@@ -375,7 +360,6 @@ StochasticIndicator = Indicator(
     name="Stochastic(14,3)",
     compute=_stoch_compute,
     verdict=_stoch_verdict,
-    tier="free",
     min_rows=17,
 )
 
@@ -386,7 +370,7 @@ StochasticIndicator = Indicator(
 
 
 def create_default_engine() -> IndicatorEngine:
-    """Return an engine pre-loaded with the 5 core free-tier indicators."""
+    """Return an engine pre-loaded with the 5 core indicators."""
     engine = IndicatorEngine()
     engine.register(RSIIndicator)
     engine.register(SMAEMAIndicator)
@@ -399,8 +383,8 @@ def create_default_engine() -> IndicatorEngine:
 def create_pro_engine() -> IndicatorEngine:
     """Return an engine with all free + pro indicators registered.
 
-    Reuses the same free-tier registry as :func:`create_default_engine` and
-    extends it with the 5 pro-tier indicators (ATR, ADX, OBV, VWAP, Ichimoku).
+    Same core registry as :func:`create_default_engine`, plus the 5 extended
+    indicators (ATR, ADX, OBV, VWAP, Ichimoku).
     Imported lazily to avoid a circular import with the extended module.
     """
     from app.services.indicators.extended import (  # noqa: PLC0415

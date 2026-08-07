@@ -19,9 +19,8 @@ from ..schemas.analysis import (
 from ..services.alpaca_client import AlpacaClient, AlpacaError
 from ..services.indicator_engine import create_pro_engine
 from ..services.chart_series import build_price_series, compute_series_for, indicator_kind
-from ..middleware.tier_gating import require_tier
 from ..services.verdicts import aggregate
-from ..services.news_service import get_news_sentiment
+from ..services.news_service import fetch_news
 from ..services.company_info import get_company_info
 from ..services.cache import cache_get, cache_set, analysis_key, CACHE_TTL_ANALYSIS
 from ..config import settings
@@ -31,26 +30,13 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 logger = logging.getLogger("vexarium.api.analysis")
 
 
-def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
-    """Fetch recent news. Returns (sentiment_summary, article_list). Never raises."""
-    try:
-        articles = client.get_news(symbol, limit=10)
-        return get_news_sentiment(articles), articles
-    except Exception:
-        logger.error("News fetch failed for %s", symbol, exc_info=True)
-        return (
-            {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."},
-            [],
-        )
-
-
-def _build_response(sym: str, body: AnalysisRequest, df, indicator_results, extended: bool = False):
+def _build_response(sym: str, body: AnalysisRequest, df, indicator_results):
     """Compute the full AnalysisResponse payload (indicators, series, news)."""
     overall = aggregate(indicator_results)
     current_price = float(df.iloc[-1]["close"]) if not df.empty else None
     price_series, indicator_series = _build_series_payload(df, indicator_results)
     client = AlpacaClient()
-    news, news_articles = _fetch_news(client, sym)
+    news, news_articles = fetch_news(client, sym)
     # Free, keyless company/ETF profile (Yahoo meta + Wikipedia summary). The
     # whole analysis is cached 24h, so this only runs once per symbol per day.
     company_info = None
@@ -111,7 +97,7 @@ async def analyze(request: Request, body: AnalysisRequest):
         sym = validate_symbol(body.symbol)
         # Daily bars -> computed indicators only change once per day, so the whole
         # analysis result is cached per symbol per day (cheap repeat lookups).
-        key = analysis_key(sym, extended=False)
+        key = analysis_key(sym)
         cached = await cache_get(key)
         if cached is not None:
             try:
@@ -126,36 +112,6 @@ async def analyze(request: Request, body: AnalysisRequest):
         engine = create_pro_engine()
         indicator_results = engine.compute_all(df)
         response = _build_response(sym, body, df, indicator_results)
-        await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)
-        return response
-    except AlpacaError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception:
-        logger.error("Analysis failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal error")
-
-
-@router.post("/extended", response_model=AnalysisResponse)
-@limiter.limit(f"{settings.rate_limit_pro}/minute")
-async def analyze_extended(request: Request, body: AnalysisRequest, _: str = Depends(require_tier("pro"))):
-    try:
-        sym = validate_symbol(body.symbol)
-        key = analysis_key(sym, extended=True)
-        cached = await cache_get(key)
-        if cached is not None:
-            try:
-                return AnalysisResponse.model_validate(cached)
-            except Exception:
-                pass
-        client = AlpacaClient()
-        df = client.get_stock_bars(sym)
-        if df.empty:
-            raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
-        engine = create_pro_engine()
-        indicator_results = engine.compute_all(df)
-        response = _build_response(sym, body, df, indicator_results, extended=True)
         await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)
         return response
     except AlpacaError as e:

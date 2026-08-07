@@ -132,20 +132,14 @@ def test_pro_engine_compute_all_ten_results(sample_df):
     for r in results:
         assert r.name is not None
         assert r.verdict in VALID_VERDICTS
-        assert r.tier in {"free", "pro"}
-        assert "tier" in r.to_dict()
 
 
 def test_pro_engine_has_five_pro_five_free():
     engine = create_pro_engine()
-    tiers = [i.tier for i in engine.indicators.values()]
-    assert tiers.count("pro") == 5
-    assert tiers.count("free") == 5
+    assert len(engine.indicators) == 10
 
 
 def test_default_engine_still_five(sample_df):
     engine = create_default_engine()
     results = engine.compute_all(sample_df)
     assert len(results) == 5
-    for r in results:
-        assert r.tier == "free"

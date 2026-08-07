@@ -163,7 +163,6 @@ def test_compute_all_returns_results(sample_df):
     for r in results:
         assert r.name is not None
         assert r.verdict in VALID_VERDICTS
-        assert r.tier == "free"
 
 
 def test_compute_all_results_are_serializable(sample_df):
@@ -171,7 +170,7 @@ def test_compute_all_results_are_serializable(sample_df):
     results = engine.compute_all(sample_df)
     for r in results:
         d = r.to_dict()
-        assert set(d.keys()) == {"name", "value", "verdict", "tier", "note"}
+        assert set(d.keys()) == {"name", "value", "verdict", "note"}
 
 
 def test_custom_indicator_registered(sample_df):
@@ -180,7 +179,6 @@ def test_custom_indicator_registered(sample_df):
         name="CustomPrice",
         compute=lambda df: float(df["close"].iloc[-1]),
         verdict=lambda v: "buy" if v > 50 else "sell",
-        tier="free",
         min_rows=1,
     )
     engine = IndicatorEngine()
@@ -199,7 +197,7 @@ def test_compute_all_handles_failing_indicator(sample_df):
     def boom(df):
         raise RuntimeError("intentional")
 
-    bad = Indicator(name="Boom", compute=boom, verdict=lambda v: "hold", tier="free")
+    bad = Indicator(name="Boom", compute=boom, verdict=lambda v: "hold")
     engine = IndicatorEngine()
     engine.register(bad)
     engine.register(RSIIndicator)

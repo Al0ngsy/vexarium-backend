@@ -4,7 +4,7 @@ from typing import Optional
 class StanceRequest(BaseModel):
     symbol: str
     entry_price: float
-    current_price: float
+    current_price: Optional[float] = None  # None -> server fetches the live quote
     trade_type: str = "stock"
     contract: Optional[dict] = None
 

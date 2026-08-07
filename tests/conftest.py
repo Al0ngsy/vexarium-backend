@@ -33,8 +33,14 @@ def _test_env():
 @pytest.fixture(autouse=True)
 def _clear_cache():
     cache_module._ttl_cache.clear()
+    # Drop the lazy Redis client too — tests swap settings.redis_url and patch
+    # aioredis.from_url per case; a cached client would leak between tests.
+    cache_module._redis_client = None
+    cache_module._redis_url = ""
     yield
     cache_module._ttl_cache.clear()
+    cache_module._redis_client = None
+    cache_module._redis_url = ""
 
 
 @pytest.fixture(autouse=True)

@@ -22,7 +22,7 @@ import logging
 
 import httpx
 
-from .cache import cache_get, cache_set
+from .cache import cache_get, cache_set, run_coro
 
 logger = logging.getLogger("vexarium.company")
 
@@ -341,7 +341,7 @@ def get_company_info(symbol: str) -> dict:
     symbol = symbol.upper()
     key = _company_key(symbol)
     try:
-        cached = _run_coro_safe(cache_get(key))
+        cached = run_coro(cache_get(key))
         if cached:
             return cached
     except Exception:
@@ -391,40 +391,10 @@ def get_company_info(symbol: str) -> dict:
             logger.debug("main-listing resolution failed for %s", symbol)
 
     try:
-        _run_coro_safe(cache_set(key, result, ttl=CACHE_TTL_COMPANY))
+        run_coro(cache_set(key, result, ttl=CACHE_TTL_COMPANY))
     except Exception:
         pass
     return result
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-def _run_coro_safe(coro):
-    """Run a small async cache call whether or not a loop is active."""
-    import asyncio
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    result = {}
-
-    def _worker():
-        try:
-            result["value"] = asyncio.run(coro)
-        except Exception:
-            result["error"] = True
-
-    import threading
-
-    t = threading.Thread(target=_worker)
-    t.start()
-    t.join()
-    if "error" in result:
-        raise RuntimeError("cache call failed")
-    return result.get("value")
 
 
 def _num(v) -> float | None:
@@ -449,7 +419,7 @@ def _yahoo_search_quotes(query: str, limit: int = 10) -> list[dict]:
     """
     key = f"ysearch:{query.lower()}"
     try:
-        cached = _run_coro_safe(cache_get(key))
+        cached = run_coro(cache_get(key))
         if cached:
             return cached
     except Exception:
@@ -477,7 +447,7 @@ def _yahoo_search_quotes(query: str, limit: int = 10) -> list[dict]:
                 for q in quotes
             ]
             try:
-                _run_coro_safe(cache_set(key, result, ttl=_YAHOO_SEARCH_CACHE_TTL))
+                run_coro(cache_set(key, result, ttl=_YAHOO_SEARCH_CACHE_TTL))
             except Exception:
                 pass
             return result

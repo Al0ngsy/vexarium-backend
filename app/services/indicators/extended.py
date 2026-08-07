@@ -1,9 +1,9 @@
-"""Extended Pro-tier indicators for VEXARIUM.
+"""Extended indicators for VEXARIUM.
 
 Implements ATR, ADX, OBV, VWAP, and Ichimoku following the exact Indicator
 pattern used in ``app.services.indicator_engine`` (dataclass ``Indicator`` with
-``name`` / ``compute`` / ``verdict`` / ``tier`` / ``min_rows``). All indicators
-here are registered with ``tier="pro"``.
+``name`` / ``compute`` / ``verdict`` / ``min_rows``). All indicators
+here are registered alongside the core set.
 """
 from __future__ import annotations
 
@@ -55,7 +55,6 @@ ATRIndicator = Indicator(
     name="ATR(14)",
     compute=_atr_compute,
     verdict=_atr_verdict,
-    tier="pro",
     min_rows=15,
 )
 
@@ -90,7 +89,6 @@ ADXIndicator = Indicator(
     name="ADX(25)",
     compute=_adx_compute,
     verdict=_adx_verdict,
-    tier="pro",
     min_rows=30,
 )
 
@@ -132,7 +130,6 @@ OBVIndicator = Indicator(
     name="OBV",
     compute=_obv_compute,
     verdict=_obv_verdict,
-    tier="pro",
     min_rows=11,
 )
 
@@ -175,7 +172,6 @@ VWAPIndicator = Indicator(
     name="VWAP",
     compute=_vwap_compute,
     verdict=_vwap_verdict,
-    tier="pro",
     min_rows=2,
 )
 
@@ -241,7 +237,6 @@ IchimokuIndicator = Indicator(
     name="Ichimoku",
     compute=_ichimoku_compute,
     verdict=_ichimoku_verdict,
-    tier="pro",
     min_rows=60,
 )
 
@@ -255,7 +250,7 @@ def create_pro_engine() -> IndicatorEngine:
     """Return an engine with all free + pro indicators registered.
 
     Reuses the same free registry as ``create_default_engine`` and extends it
-    with the 5 pro-tier indicators (ATR, ADX, OBV, VWAP, Ichimoku).
+    with the 5 extended indicators (ATR, ADX, OBV, VWAP, Ichimoku).
     """
     engine = create_default_engine()
     engine.register(ATRIndicator)

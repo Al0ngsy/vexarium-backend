@@ -12,7 +12,7 @@ from ..middleware.validation import validate_symbol
 from ..middleware.tier_gating import require_tier
 from ..services.alpaca_client import AlpacaClient, AlpacaError
 from ..services.options_analyzer import (
-    compute_payoff, compute_breakeven, build_payoff_timeline,
+    compute_breakeven, build_payoff_timeline,
     option_value_at_price, build_payoff_matrix, black_scholes_price,
     prob_profit,
 )
@@ -23,15 +23,9 @@ router = APIRouter(prefix="/options", tags=["options"])
 
 def _parse_occ(contract_symbol: str) -> tuple[float, str, bool]:
     """Parse OCC option symbol: ROOT + YYMMDD + C/P + strike*1000. Returns (strike, expiry_iso, is_call)."""
-    s = contract_symbol.strip().upper()
-    # OCC equity option layout: ROOT(1-6) + YYMMDD(6) + C/P(1) + strike(8) = 16-21 chars.
-    if len(s) < 16:
+    if len(contract_symbol.strip().upper()) < 16:
         raise ValueError("Invalid OCC symbol")
-    cp = s[-9]
-    strike = float(s[-8:]) / 1000.0
-    yymmdd = s[-15:-9]
-    expiry = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
-    return (strike, expiry, cp == "C")
+    return AlpacaClient._parse_occ_symbol(contract_symbol)
 
 
 @router.get("/{symbol}/chain", response_model=OptionsChainResponse)
@@ -90,7 +84,7 @@ async def get_option_chain(
         # meaningful. Spread across the remaining range.
         today_iso = date.today().isoformat()
         expiries = sorted({c["expiration_date"] for c in contracts if c.get("expiration_date") and c.get("expiration_date") != today_iso})
-        picked = expiries[:max_expiries] if len(expiries) <= max_expiries else _spread(expiries, max_expiries)
+        picked = AlpacaClient._spread_expiries(expiries, max_expiries)
         picked_set = set(picked)
 
         schema_contracts = []
@@ -153,15 +147,6 @@ async def get_option_chain(
         )
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))
-
-
-def _spread(items: list, n: int) -> list:
-    """Pick n items spread evenly across a sorted list."""
-    if len(items) <= n or n <= 0:
-        return items
-    step = (len(items) - 1) / (n - 1)
-    idxs = sorted({round(i * step) for i in range(n)})
-    return [items[i] for i in idxs]
 
 
 def _dte(expiry: str) -> int:

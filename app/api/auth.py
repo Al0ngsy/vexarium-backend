@@ -57,18 +57,6 @@ async def login(request: Request, req: LoginRequest):
     return TokenResponse(access_token=token, tier=user["tier"])
 
 
-async def set_tier(user_id: int, tier: str):
-    await _store().set_tier(user_id, tier)
-
-
-async def set_stripe_customer(user_id: int, customer_id: str):
-    await _store().set_stripe_customer(user_id, customer_id)
-
-
-async def get_user(user_id: int) -> dict | None:
-    return await _store().get_by_id(user_id)
-
-
 @router.get("/me")
 async def me(token: str):
     payload = decode_token(token)

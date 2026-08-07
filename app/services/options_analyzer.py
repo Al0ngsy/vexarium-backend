@@ -166,23 +166,6 @@ def _frange(lo, hi, step):
         p += step
     return out
 
-def compute_payoff(strike: float, premium: float, current_price: float, is_call: bool) -> dict:
-    if is_call:
-        intrinsic = max(current_price - strike, 0)
-    else:
-        intrinsic = max(strike - current_price, 0)
-    pl = intrinsic - premium
-    pl_pct = (pl / premium) if premium > 0 else 0.0
-    return {
-        "strike": strike,
-        "premium": premium,
-        "current_price": current_price,
-        "intrinsic_value": intrinsic,
-        "pl": round(pl, 2),
-        "pl_pct": round(pl_pct, 4),
-        "is_call": is_call,
-    }
-
 def compute_breakeven(strike: float, premium: float, is_call: bool) -> float:
     if is_call:
         return strike + premium

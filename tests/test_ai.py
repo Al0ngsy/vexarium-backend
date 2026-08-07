@@ -341,8 +341,6 @@ async def test_ai_endpoint_any_symbol_free():
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/api/v1/analysis/ai", json={"symbol": "AAPL"})
             assert resp.status_code == 200
-            data = resp.json()
-            assert data["is_preview"] is False
 
 
 @pytest.mark.asyncio
@@ -629,5 +627,5 @@ async def test_options_strategies_ai_pro_user():
             )
             assert resp.status_code == 200
             data = resp.json()
-            assert "analysis" in data and data["is_preview"] is False
+            assert "analysis" in data and "strategies" in data
 

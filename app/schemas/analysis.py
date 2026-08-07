@@ -21,7 +21,6 @@ class IndicatorResult(BaseModel):
     name: str
     value: Optional[float | dict] = None
     verdict: str
-    tier: str = "free"
 
 class OverallVerdict(BaseModel):
     overall_verdict: str

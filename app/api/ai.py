@@ -10,7 +10,7 @@ from ..services.alpaca_client import AlpacaClient
 from ..services.indicator_engine import create_pro_engine
 from ..services.verdicts import aggregate
 from ..services.ai_analyzer import build_prompt, analyze as llm_analyze
-from ..services.news_service import get_news_sentiment
+from ..services.news_service import fetch_news
 from ..services.company_info import get_company_info
 from ..services.cache import (
     cache_get, cache_set, ai_key, ai_lock_key, CACHE_TTL_AI,
@@ -23,27 +23,13 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 logger = logging.getLogger("vexarium.api.ai")
 
 
-async def _ai_access(request: Request, body: AnalysisRequest):
+async def _ai_access(request: Request, body: AnalysisRequest) -> str:
     """AI is free for everyone (IP rate-limited). No token / tier / featured
     gating — the endpoint is open and protected by the per-IP rate limit and
     the 24h per-symbol cache. Tier is still detected (for the Pro-only
     options-strategies endpoint) but never blocks the main AI endpoint."""
     token = request.query_params.get("token", "")
-    user_tier = await get_user_tier(token)
-    return {"tier": user_tier, "is_preview": False}
-
-
-def _fetch_news(client: AlpacaClient, symbol: str) -> tuple[dict, list]:
-    """Fetch recent news. Returns (sentiment_summary, article_list). Never raises."""
-    try:
-        articles = client.get_news(symbol, limit=10)
-        return get_news_sentiment(articles), articles
-    except Exception:
-        logger.error("News fetch failed for %s", symbol, exc_info=True)
-        return (
-            {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."},
-            [],
-        )
+    return await get_user_tier(token)
 
 
 def _build_context(sym: str) -> tuple:
@@ -59,7 +45,7 @@ def _build_context(sym: str) -> tuple:
     engine = create_pro_engine()
     indicator_results = [r.to_dict() for r in engine.compute_all(df)]
     overall = aggregate(indicator_results)
-    news, articles = _fetch_news(client, sym)
+    news, articles = fetch_news(client, sym)
     # Comprehensive context: live price, day change, 52-week range, YTD change.
     market_data = client.get_market_snapshot(sym, df)
     # Company fundamentals (free keyless Yahoo) — enriches the briefing.
@@ -77,7 +63,7 @@ def _build_context(sym: str) -> tuple:
     return df, indicator_results, overall, news, articles, market_data, company_info, prompt
 
 
-def _make_result(sym: str, text: str, news, articles, market_data, is_preview: bool) -> dict:
+def _make_result(sym: str, text: str, news, articles, market_data) -> dict:
     return {
         "symbol": sym,
         "analysis": text,
@@ -86,21 +72,16 @@ def _make_result(sym: str, text: str, news, articles, market_data, is_preview: b
         "news_sentiment": news,
         "news_articles": articles[:8],
         "market": market_data,
-        "is_preview": is_preview,
     }
 
 
 @router.post("/ai")
 @limiter.limit(f"{settings.rate_limit_ai}/minute")
-async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
+async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = Depends(_ai_access)):
     sym = validate_symbol(body.symbol)
-    is_preview = access.get("is_preview", False)
 
     async def _cached_or_none():
-        cached = await cache_get(ai_key(sym))
-        if cached and is_preview:
-            cached["is_preview"] = True
-        return cached
+        return await cache_get(ai_key(sym))
 
     try:
         cached = await _cached_or_none()
@@ -142,8 +123,8 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
         # (max_tokens hit / interrupted stream) won't contain it.
         if "not financial advice" not in text.lower():
             logger.warning("AI answer for %s missing disclaimer footer — not caching (%d chars)", sym, len(text))
-            return _make_result(sym, text, news, articles, market_data, is_preview)
-        result = _make_result(sym, text, news, articles, market_data, is_preview)
+            return _make_result(sym, text, news, articles, market_data)
+        result = _make_result(sym, text, news, articles, market_data)
         await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
         return result
     except ValueError as e:
@@ -157,7 +138,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, access: dict = De
 
 @router.post("/ai/stream")
 @limiter.limit(f"{settings.rate_limit_ai}/minute")
-async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
+async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier: str = Depends(_ai_access)):
     """SSE streaming AI analysis.
 
     - Uncached: streams live tokens from the LLM as they arrive (the answer
@@ -171,13 +152,9 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: di
     from ..services.ai_analyzer import analyze_stream
 
     sym = validate_symbol(body.symbol)
-    is_preview = access.get("is_preview", False)
 
     async def _cached_or_none():
-        cached = await cache_get(ai_key(sym))
-        if cached and is_preview:
-            cached["is_preview"] = True
-        return cached
+        return await cache_get(ai_key(sym))
 
     async def _stream_text(text: str, chunk_size: int = 24, delay: float = 0.03):
         """Replay stored text in small chunks (illusion of live generation)."""
@@ -240,7 +217,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: di
                 logger.warning("AI answer for %s missing disclaimer footer — not caching (%d chars)", sym, len(text))
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
                 return
-            result = _make_result(sym, text, news, articles, market_data, is_preview)
+            result = _make_result(sym, text, news, articles, market_data)
             await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
             yield "data: " + json.dumps({"done": True}) + "\n\n"
         except ValueError as e:
@@ -266,7 +243,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, access: di
 
 @router.post("/options-strategies")
 @limiter.limit(f"{settings.rate_limit_pro}/minute")
-async def ai_options_strategies(request: Request, body: AnalysisRequest, access: dict = Depends(_ai_access)):
+async def ai_options_strategies(request: Request, body: AnalysisRequest, user_tier: str = Depends(_ai_access)):
     """Pro feature: natural-language explanation of recommended options strategies.
 
     Feeds the technical indicators + a user's chosen strike into the strategy
@@ -275,7 +252,7 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, access:
     """
     sym = validate_symbol(body.symbol)
     strike = body.strike or 0.0
-    if access.get("tier") != "pro":
+    if user_tier != "pro":
         raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access options AI.")
     try:
         client = AlpacaClient()
@@ -319,7 +296,6 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, access:
             "strategies": recs,
             "analysis": text,
             "model": settings.llm_model,
-            "is_preview": False,
         }
     except Exception:
         logger.error("Options-strategies AI failed", exc_info=True)

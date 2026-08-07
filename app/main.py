@@ -21,7 +21,7 @@ from app.api.strategies import router as strategies_router
 from app.api.trades import router as trades_router
 from app.config import settings
 from app.middleware.logging import request_logging_middleware
-from app.middleware.rate_limit import get_limiter
+from app.middleware.rate_limit import limiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -55,7 +55,6 @@ app = FastAPI(
 )
 
 # --- Rate limiting ---
-limiter = get_limiter()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 

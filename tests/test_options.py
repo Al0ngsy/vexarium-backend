@@ -1,34 +1,12 @@
 import pytest
 from app.api.options import _parse_occ
-from app.services.options_analyzer import compute_payoff, compute_breakeven, build_payoff_timeline
+from app.services.options_analyzer import compute_breakeven, build_payoff_timeline
 
 def test_parse_occ_call():
     assert _parse_occ("SPY250919C00750000") == (750.0, "2025-09-19", True)
 
 def test_parse_occ_put():
     assert _parse_occ("SPY250919P00750000") == (750.0, "2025-09-19", False)
-
-def test_call_payoff_in_the_money():
-    result = compute_payoff(strike=100, premium=5, current_price=110, is_call=True)
-    assert result["intrinsic_value"] == 10
-    assert result["pl"] == 5
-    assert result["pl_pct"] == 1.0
-
-def test_call_payoff_out_of_the_money():
-    result = compute_payoff(strike=100, premium=5, current_price=95, is_call=True)
-    assert result["intrinsic_value"] == 0
-    assert result["pl"] == -5
-    assert result["pl_pct"] == -1.0
-
-def test_put_payoff_in_the_money():
-    result = compute_payoff(strike=100, premium=5, current_price=90, is_call=False)
-    assert result["intrinsic_value"] == 10
-    assert result["pl"] == 5
-
-def test_put_payoff_out_of_the_money():
-    result = compute_payoff(strike=100, premium=5, current_price=105, is_call=False)
-    assert result["intrinsic_value"] == 0
-    assert result["pl"] == -5
 
 def test_breakeven_call():
     assert compute_breakeven(strike=100, premium=5, is_call=True) == 105

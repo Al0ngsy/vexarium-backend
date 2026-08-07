@@ -16,7 +16,7 @@ import pytest
 
 from app.services.alpaca_client import AlpacaClient
 from app.services.options_analyzer import prob_profit
-from app.api.options import _dte, _spread
+from app.api.options import _dte
 
 
 # ---------------------------------------------------------------------------
@@ -156,5 +156,5 @@ def test_dte_invalid():
 
 
 def test_spread():
-    assert _spread(["a", "b", "c", "d", "e"], 3) == ["a", "c", "e"]
-    assert _spread(["a", "b"], 5) == ["a", "b"]
+    assert AlpacaClient._spread_expiries(["a", "b", "c", "d", "e"], 3) == ["a", "c", "e"]
+    assert AlpacaClient._spread_expiries(["a", "b"], 5) == ["a", "b"]
