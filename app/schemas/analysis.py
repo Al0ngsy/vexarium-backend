@@ -64,6 +64,13 @@ class NewsArticle(BaseModel):
         )
 
 
+class MainListing(BaseModel):
+    """Primary home-exchange listing of an OTC/foreign ADR (RNMBY -> RHM.DE)."""
+    symbol: str
+    name: Optional[str] = None
+    exchange: Optional[str] = None
+
+
 class CompanyInfo(BaseModel):
     """Free, keyless company/ETF profile + fundamentals (Yahoo + Wikipedia)."""
     symbol: str
@@ -73,6 +80,7 @@ class CompanyInfo(BaseModel):
     exchange: Optional[str] = None
     currency: Optional[str] = None
     description: Optional[str] = None  # plain-English Wikipedia summary
+    main_listing: Optional[MainListing] = None  # OTC ADR -> primary listing
     # About / operations
     sector: Optional[str] = None
     industry: Optional[str] = None

@@ -187,3 +187,87 @@ def test_clean_description_trims_long_text():
 
 def test_clean_description_empty():
     assert _clean_description("") == ""
+
+
+# ---------------------------------------------------------------------------
+# OTC ADR -> main listing resolution
+# ---------------------------------------------------------------------------
+
+def _make_adr_fundamentals(exchange: str = "OTC Markets OTCPK") -> dict:
+    f = _make_fundamentals()
+    f["price"] = {
+        **f["price"],
+        "longName": "Rheinmetall AG",
+        "exchangeName": exchange,
+    }
+    return f
+
+
+def _fake_search_response(quotes: list[dict]):
+    """Fake httpx.get serving the Yahoo /v1/finance/search endpoint."""
+
+    def _fake_get(self, url, **kw):
+        if "test/getcrumb" in url:
+            r = SimpleNamespace(status_code=200)
+            r.raise_for_status = lambda: None
+            r.text = "some-crumb"
+            return r
+        if "quoteSummary" in url:
+            return _resp({"quoteSummary": {"result": [_make_adr_fundamentals()]}})
+        if "finance/search" in url:
+            return _resp({"quotes": quotes})
+        if "finance/chart" in url:
+            return _resp({
+                "chart": {"result": [{"meta": {
+                    "longName": "Rheinmetall AG", "shortName": "Rheinmetall",
+                    "fullExchangeName": "OTC Markets OTCPK",
+                    "fiftyTwoWeekHigh": 500.0, "fiftyTwoWeekLow": 200.0,
+                    "currency": "USD",
+                }}]}
+            })
+        return _resp({"extract": "Rheinmetall AG is a German defense company."})
+
+    return patch.object(company_info.httpx.Client, "get", _fake_get)
+
+
+def test_otc_adr_resolves_main_listing():
+    """RNMBY (OTC ADR) -> primary listing RHM.DE on XETRA via Yahoo search."""
+    quotes = [
+        {"symbol": "RHM.DE", "longname": "Rheinmetall AG", "shortname": "RHEINMETALL AG",
+         "exchDisp": "XETRA", "exchange": "GER", "quoteType": "EQUITY"},
+        {"symbol": "RHM.F", "longname": "Rheinmetall AG", "shortname": "RHEINMETALL AG",
+         "exchDisp": "Frankfurt", "exchange": "FRA", "quoteType": "EQUITY"},
+        {"symbol": "RNMBY", "longname": "Rheinmetall AG", "shortname": "Rheinmetall AG",
+         "exchDisp": "OTC Markets", "exchange": "OQX", "quoteType": "EQUITY"},
+    ]
+    with _fake_search_response(quotes):
+        info = get_company_info("RNMBY")
+    ml = info.get("main_listing")
+    assert ml is not None
+    assert ml["symbol"] == "RHM.DE"  # XETRA/GER preferred over Frankfurt
+    assert ml["exchange"] == "XETRA"
+
+
+def test_non_otc_has_no_main_listing():
+    with _fake_quote_summary(_make_fundamentals()):
+        info = get_company_info("AAPL")
+    assert info.get("main_listing") is None
+
+
+def test_find_main_listing_none_when_no_search_results():
+    with patch.object(company_info, "_yahoo_search_quotes", return_value=[]):
+        assert company_info.find_main_listing("RNMBY", "Rheinmetall AG") is None
+
+
+def test_find_main_listing_skips_other_companies():
+    """Same company name is required — other tickers are ignored."""
+    quotes = [
+        {"symbol": "SIE.DE", "longname": "Siemens AG", "shortname": "Siemens AG",
+         "exchDisp": "XETRA", "exchange": "GER", "quoteType": "EQUITY"},
+        {"symbol": "RHM.DE", "longname": "Rheinmetall AG", "shortname": "RHEINMETALL AG",
+         "exchDisp": "XETRA", "exchange": "GER", "quoteType": "EQUITY"},
+    ]
+    with patch.object(company_info, "_yahoo_search_quotes", return_value=quotes):
+        ml = company_info.find_main_listing("RNMBY", "Rheinmetall AG")
+    assert ml is not None
+    assert ml["symbol"] == "RHM.DE"

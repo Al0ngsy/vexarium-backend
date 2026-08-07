@@ -39,7 +39,9 @@ _HTTP_TIMEOUT = 12.0
 
 
 def _company_key(symbol: str) -> str:
-    return f"company:{symbol.upper()}"
+    # v2: adds OTC-ADR -> main-listing resolution; bump on schema changes so
+    # stale Redis entries (cached without the new fields) are not served.
+    return f"company:v2:{symbol.upper()}"
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +378,18 @@ def get_company_info(symbol: str) -> dict:
     except Exception:
         logger.debug("Yahoo v8 meta unavailable for %s", symbol)
 
+    # OTC/foreign ADRs (RNMBY, SMERY, …): map to the primary home-exchange
+    # listing (RHM.DE / XETRA, ENR.DE / XETRA) so the UI can offer a switch.
+    # Runs after the v8 meta fill below so the company name is available even
+    # when quoteSummary returns an empty longName (common for OTC symbols).
+    if "OTC" in (result.get("exchange") or "").upper():
+        try:
+            main_listing = find_main_listing(symbol, result.get("name") or "")
+            if main_listing:
+                result["main_listing"] = main_listing
+        except Exception:
+            logger.debug("main-listing resolution failed for %s", symbol)
+
     try:
         _run_coro_safe(cache_set(key, result, ttl=CACHE_TTL_COMPANY))
     except Exception:
@@ -418,6 +432,128 @@ def _num(v) -> float | None:
         return round(float(v), 2)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Yahoo search (keyless) — shared by assets search + ADR main-listing lookup
+# ---------------------------------------------------------------------------
+
+_YAHOO_SEARCH_CACHE_TTL = 60  # seconds
+
+
+def _yahoo_search_quotes(query: str, limit: int = 10) -> list[dict]:
+    """Keyless Yahoo Finance search -> raw quote dicts.
+
+    Cached briefly (keystroke-debounced queries shouldn't hammer Yahoo).
+    Returns [] on any failure — never raises.
+    """
+    key = f"ysearch:{query.lower()}"
+    try:
+        cached = _run_coro_safe(cache_get(key))
+        if cached:
+            return cached
+    except Exception:
+        pass
+
+    last_err: Exception | None = None
+    for host in ("query1", "query2"):
+        try:
+            url = f"https://{host}.finance.yahoo.com/v1/finance/search"
+            with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT) as client:
+                resp = client.get(
+                    url, params={"q": query, "quotesCount": limit, "newsCount": 0}
+                )
+                resp.raise_for_status()
+                quotes = resp.json().get("quotes") or []
+            result = [
+                {
+                    "symbol": q.get("symbol") or "",
+                    "name": q.get("longname") or q.get("shortname") or "",
+                    "shortname": q.get("shortname") or "",
+                    "exchange": q.get("exchDisp") or q.get("exchange") or "",
+                    "exch_code": q.get("exchange") or "",
+                    "quoteType": q.get("quoteType") or "",
+                }
+                for q in quotes
+            ]
+            try:
+                _run_coro_safe(cache_set(key, result, ttl=_YAHOO_SEARCH_CACHE_TTL))
+            except Exception:
+                pass
+            return result
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+    logger.debug("Yahoo search unavailable for %s: %s", query, last_err)
+    return []
+
+
+# ---------------------------------------------------------------------------
+# ADR -> primary listing resolution (RNMBY -> RHM.DE / XETRA)
+# ---------------------------------------------------------------------------
+
+# Exchange preference for choosing the "main listing" of a foreign company.
+# XETRA (GER) is the primary German exchange; FRA/Frankfurt is the secondary.
+_MAIN_EXCHANGE_RANK = {
+    "GER": 0, "XETRA": 0,
+    "FRA": 1, "FRANKFURT": 1,
+    "LSE": 2, "LON": 2, "PAR": 2, "EPA": 2, "MIL": 3, "TYO": 3, "TLO": 3,
+}
+_OTC_EXCHANGE_CODES = {"OQX", "OQB", "PNK", "OTC", "PINKSHEETS", "STU", "CXE"}
+
+
+def find_main_listing(symbol: str, name: str) -> dict | None:
+    """Map an OTC ADR to its primary home-exchange listing.
+
+    E.g. ``RNMBY`` (Rheinmetall AG ADR, OTC) -> ``RHM.DE`` (XETRA) and
+    ``SMERY`` (Siemens Energy ADR) -> ``ENR.DE`` (XETRA). Uses keyless Yahoo
+    search on the company name, preferring the main German exchange, then
+    Frankfurt, then any non-OTC listing of the same company.
+
+    Returns ``{"symbol", "name", "exchange"}`` or None.
+    """
+    if not name:
+        return None
+    quotes = _yahoo_search_quotes(name, limit=10)
+    if not quotes:
+        return None
+    candidates: list[dict] = []
+    for q in quotes:
+        sym = (q.get("symbol") or "").upper()
+        if not sym or sym == symbol.upper():
+            continue
+        if q.get("quoteType") not in ("EQUITY", "ETF"):
+            continue
+        exch_code = (q.get("exch_code") or "").upper()
+        if exch_code in _OTC_EXCHANGE_CODES:
+            continue
+        # Same company? Match on the Yahoo long/short name.
+        qname = (q.get("name") or q.get("shortname") or "").upper()
+        n = name.upper()
+        if not (n in qname or qname in n or _name_tokens_overlap(n, qname)):
+            continue
+        candidates.append(q)
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda q: _MAIN_EXCHANGE_RANK.get((q.get("exch_code") or "").upper(), 99)
+    )
+    best = candidates[0]
+    return {
+        "symbol": best["symbol"],
+        "name": best.get("name") or best.get("shortname") or "",
+        "exchange": best.get("exchange") or "",
+    }
+
+
+def _name_tokens_overlap(a: str, b: str) -> bool:
+    """Do two company names share a meaningful token (e.g. 'RHEINMETALL')?"""
+    import re
+
+    stop = {"AG", "SE", "PLC", "INC", "CORP", "LTD", "CO", "NV", "SA", "ADR"}
+    ta = {t for t in re.split(r"[\s,./&()-]+", a) if t and t not in stop}
+    tb = {t for t in re.split(r"[\s,./&()-]+", b) if t and t not in stop}
+    return bool(ta & tb)
 
 
 # Curated fallback: symbol -> exact Wikipedia article title for tricky cases
