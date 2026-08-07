@@ -74,3 +74,31 @@ async def test_asset_search_merges_yahoo_main_listing():
     finally:
         assets_module._assets_cache = []
         assets_module._assets_loaded = False
+
+
+@pytest.mark.asyncio
+async def test_asset_search_wkn_fallback():
+    """German WKNs (A1JX52, ETF146, …) resolve via wallstreet-online name
+    lookup -> Yahoo name search, German listings ranked first."""
+    assets_module._assets_cache = []
+    assets_module._assets_loaded = True
+    wkn_results = [
+        {"symbol": "VWRD.L", "name": "Vanguard FTSE All-World UCITS ETF", "exchange": "London", "exch_code": "LSE", "asset_type": "etf"},
+        {"symbol": "VGWL.DE", "name": "Vanguard FTSE All-World U.ETF R", "exchange": "XETRA", "exch_code": "GER", "asset_type": "etf"},
+    ]
+    try:
+        with (
+            patch("app.api.assets._yahoo_search", return_value=[]),
+            patch("app.api.assets._wso_fund_name", return_value="Vanguard FTSE All-World UCITS ETF Distributing"),
+            patch("app.api.assets._yahoo_search_quotes", return_value=wkn_results),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.get("/api/v1/assets/search", params={"q": "A1JX52"})
+                assert resp.status_code == 200
+                symbols = [a["symbol"] for a in resp.json()["assets"]]
+                # XETRA listing ranks above the LSE one.
+                assert symbols == ["VGWL.DE", "VWRD.L"]
+    finally:
+        assets_module._assets_cache = []
+        assets_module._assets_loaded = False

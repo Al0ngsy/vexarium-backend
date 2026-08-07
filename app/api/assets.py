@@ -1,8 +1,17 @@
-from fastapi import APIRouter, Request, Query
-from ..middleware.rate_limit import limiter
-from ..config import settings
-from ..services.company_info import _yahoo_search_quotes
 import logging
+import re
+
+import httpx
+from fastapi import APIRouter, Request, Query
+
+from ..config import settings
+from ..middleware.rate_limit import limiter
+from ..services.company_info import (
+    _HEADERS,
+    _MAIN_EXCHANGE_RANK,
+    _OTC_EXCHANGE_CODES,
+    _yahoo_search_quotes,
+)
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 logger = logging.getLogger("vexarium.api.assets")
@@ -81,6 +90,70 @@ def _detect_type(name: str, symbol: str) -> str:
     return "stock"
 
 
+# --- German WKN fallback (A1JX52, ETF146, …) --------------------------------
+# WKNs are 5-6 char German instrument ids. Yahoo search doesn't index them, so
+# resolve WKN -> fund name via wallstreet-online (keyless HTML), then run the
+# existing Yahoo name search on that name and prefer German listings.
+
+
+def _wso_fund_name(q: str) -> str:
+    """WKN -> fund name via the wallstreet-online search page. '' on failure."""
+    try:
+        with httpx.Client(headers=_HEADERS, timeout=12.0, follow_redirects=True) as client:
+            resp = client.get(f"https://www.wallstreet-online.de/suche?q={q}")
+            resp.raise_for_status()
+            html = resp.text
+        m = re.search(r"Kursdetails\s+([^<]+)", html)
+        return m.group(1).strip() if m else ""
+    except Exception:  # noqa: BLE001
+        logger.debug("wallstreet-online lookup failed for %s", q, exc_info=True)
+        return ""
+
+
+def _wkn_search(q: str, limit: int = 4) -> list[dict]:
+    """German WKN -> ticker listings, German exchanges ranked first."""
+    name = _wso_fund_name(q)
+    if not name:
+        return []
+    # Yahoo search chokes on the share-class tail wso appends
+    # ("… UCITS ETF Distributing" / "… DR - USD (C)") — cut back to the fund
+    # name. ponytail: dist-vs-acc share class not matched — same fund family
+    # either way, German listing ranked first.
+    name = re.split(r"\s+UCITS ETF\b", name, maxsplit=1)[0] + " UCITS ETF" if "UCITS ETF" in name else name
+    brand = name.split()[0].upper()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for qt in _yahoo_search_quotes(name, limit=limit * 3):
+        symbol = qt.get("symbol") or ""
+        if not symbol or symbol.upper() in seen:
+            continue
+        if (qt.get("exch_code") or "").upper() in _OTC_EXCHANGE_CODES:
+            continue
+        if "(ADR" in (qt.get("name") or "").upper():
+            continue
+        # Relevance: Yahoo fuzzy-matches similar funds ("Lyxor MSCI World" for
+        # an "Amundi MSCI World" WKN) — require the brand word to match.
+        if brand and brand not in (qt.get("name") or qt.get("shortname") or "").upper():
+            continue
+        seen.add(symbol.upper())
+        out.append(
+            {
+                "symbol": symbol,
+                "name": qt.get("name") or qt.get("shortname") or symbol,
+                "exchange": qt.get("exchange") or "",
+                "exch_code": qt.get("exch_code") or "",
+                "asset_type": _detect_type(qt.get("name") or symbol, symbol),
+            }
+        )
+    out.sort(
+        key=lambda a: min(
+            _MAIN_EXCHANGE_RANK.get(ex, 9)
+            for ex in ((a.get("exch_code") or "").upper(), (a["exchange"] or "").upper())
+        )
+    )
+    return out[:limit]
+
+
 @router.get("/search")
 @limiter.limit(f"{settings.rate_limit_free}/minute")
 async def search_assets(request: Request, q: str = Query("", max_length=60)):
@@ -129,4 +202,10 @@ async def search_assets(request: Request, q: str = Query("", max_length=60)):
                 break
             if q_lower in a["name"].lower():
                 _add(a)
+    # 5. German WKN fallback (A1JX52, ETF146, …) — Yahoo doesn't index WKNs;
+    #    only try when nothing else matched so a 6-char US ticker is never
+    #    misrouted through the WKN path.
+    if not results and re.fullmatch(r"[A-Z0-9]{5,6}", q):
+        for a in _wkn_search(q):
+            _add(a)
     return {"assets": results[:20]}
