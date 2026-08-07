@@ -31,6 +31,79 @@ from .exceptions import AlpacaError, SymbolNotFoundError, SubscriptionRequiredEr
 
 logger = logging.getLogger('vexarium.alpaca')
 
+# Yahoo fallback for symbols outside Alpaca's universe. Windows Chrome UA —
+# Yahoo rate-limits/429s the macOS UA from datacenter IPs (Render); the
+# Windows UA is accepted (same rationale as company_info.py).
+_YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+}
+_EMPTY_BARS_COLUMNS = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
+
+
+def _yahoo_range(days: int) -> str:
+    """Map a requested number of days to a Yahoo chart range parameter."""
+    for limit, rng in (
+        (31, '1mo'), (92, '3mo'), (183, '6mo'), (365, '1y'),
+        (730, '2y'), (1826, '5y'),
+    ):
+        if days <= limit:
+            return rng
+    return '10y'
+
+
+def _fetch_yahoo_bars(symbol: str, days: int = 365) -> pd.DataFrame:
+    """Fetch daily OHLCV bars from Yahoo Finance v8 chart (keyless).
+
+    Fallback for symbols outside Alpaca's equity universe — e.g. OTC/Pink
+    Sheet ADRs like SMERY (Siemens Energy) or RNMBY (Rheinmetall), which
+    trade on OTC Markets and return no bars from Alpaca. Yahoo covers them.
+
+    Returns an empty DataFrame (never raises) on any failure. Tries query1
+    then query2 hosts, same as company_info.py.
+    """
+    rng = _yahoo_range(days)
+    last_err: Exception | None = None
+    for host in ('query1', 'query2'):
+        try:
+            url = (
+                f"https://{host}.finance.yahoo.com/v8/finance/chart/{symbol}"
+                f"?range={rng}&interval=1d"
+            )
+            with httpx.Client(headers=_YAHOO_HEADERS, timeout=12.0) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+                payload = resp.json()
+            result = payload['chart']['result'][0]
+            timestamps = result.get('timestamp') or []
+            quote = (result.get('indicators') or {}).get('quote') or [{}]
+            q = quote[0] if quote else {}
+            rows = []
+            n = len(timestamps)
+            for i, ts in enumerate(timestamps):
+                close = (q.get('close') or [None] * n)[i]
+                if close is None:
+                    continue  # no trade that day (OTC ADRs are illiquid)
+                open_ = (q.get('open') or [close] * n)[i] or close
+                high = (q.get('high') or [close] * n)[i] or close
+                low = (q.get('low') or [close] * n)[i] or close
+                volume = (q.get('volume') or [0] * n)[i] or 0.0
+                rows.append({
+                    'open': float(open_),
+                    'high': float(high),
+                    'low': float(low),
+                    'close': float(close),
+                    'volume': float(volume),
+                    'timestamp': pd.to_datetime(ts, unit='s', utc=True),
+                })
+            if rows:
+                return pd.DataFrame(rows)
+            last_err = RuntimeError('no rows in Yahoo response')
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+    logger.warning('Yahoo bars fallback failed for %s: %s', symbol, last_err)
+    return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
+
 
 def _run_coro(coro):
     """Run an async cache call whether or not an event loop is active."""
@@ -82,7 +155,13 @@ class AlpacaClient:
             else:
                 bars = []
             if not bars:
-                return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume', 'timestamp'])
+                # OTC/Pink-Sheet ADRs (SMERY, RNMBY, …) return no bars from
+                # Alpaca. Fall back to keyless Yahoo daily bars before giving up.
+                df = _fetch_yahoo_bars(symbol, days)
+                if not df.empty:
+                    _run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+                    return df
+                return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
             rows = []
             for bar in bars:
                 rows.append({
@@ -100,6 +179,12 @@ class AlpacaClient:
             logger.error("Alpaca get_stock_bars failed for %s: %s", symbol, e)
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
+                # Alpaca rejected the symbol outright — it may still be a real
+                # OTC/ADR ticker. Try the Yahoo fallback before giving up.
+                df = _fetch_yahoo_bars(symbol, days)
+                if not df.empty:
+                    _run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+                    return df
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
             raise AlpacaError(f"Failed to fetch stock bars for {symbol}")
 

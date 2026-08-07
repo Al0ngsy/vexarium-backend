@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from app.services.alpaca_client import AlpacaClient
+from app.services.alpaca_client import AlpacaClient, _fetch_yahoo_bars
 from app.services.exceptions import AlpacaError, SymbolNotFoundError
 
 
@@ -104,7 +104,11 @@ class TestStockBars:
         resp = SimpleNamespace(data={"AAPL": []})
         client._stock.get_stock_bars.return_value = resp
 
-        df = client.get_stock_bars("AAPL")
+        with patch(
+            "app.services.alpaca_client._fetch_yahoo_bars",
+            return_value=pd.DataFrame(columns=["open", "high", "low", "close", "volume", "timestamp"]),
+        ):
+            df = client.get_stock_bars("AAPL")
 
         assert isinstance(df, pd.DataFrame)
         assert df.empty
@@ -123,8 +127,143 @@ class TestStockBars:
             "symbol not found"
         )
 
-        with pytest.raises(SymbolNotFoundError):
-            client.get_stock_bars("BAD")
+        with patch(
+            "app.services.alpaca_client._fetch_yahoo_bars",
+            return_value=pd.DataFrame(columns=["open", "high", "low", "close", "volume", "timestamp"]),
+        ):
+            with pytest.raises(SymbolNotFoundError):
+                client.get_stock_bars("BAD")
+
+    def test_empty_alpaca_falls_back_to_yahoo(self, client):
+        """OTC ADRs (SMERY, RNMBY) return no Alpaca bars -> Yahoo fills in."""
+        resp = SimpleNamespace(data={"SMERY": []})
+        client._stock.get_stock_bars.return_value = resp
+        yahoo_df = pd.DataFrame({
+            "open": [10.0, 10.5], "high": [11.0, 11.5], "low": [9.5, 10.0],
+            "close": [10.25, 10.75], "volume": [1000.0, 2000.0],
+            "timestamp": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+        })
+
+        with patch(
+            "app.services.alpaca_client._fetch_yahoo_bars",
+            return_value=yahoo_df,
+        ) as mock_yahoo:
+            df = client.get_stock_bars("SMERY")
+
+        mock_yahoo.assert_called_once_with("SMERY", 365)
+        assert len(df) == 2
+        assert df.iloc[-1]["close"] == 10.75
+
+    def test_not_found_falls_back_to_yahoo(self, client):
+        """Alpaca raising 'not found' still tries Yahoo before SymbolNotFound."""
+        client._stock.get_stock_bars.side_effect = Exception(
+            "symbol not found"
+        )
+        yahoo_df = pd.DataFrame({
+            "open": [10.0], "high": [11.0], "low": [9.5], "close": [10.25],
+            "volume": [1000.0], "timestamp": pd.to_datetime(["2025-01-02"]),
+        })
+
+        with patch(
+            "app.services.alpaca_client._fetch_yahoo_bars",
+            return_value=yahoo_df,
+        ) as mock_yahoo:
+            df = client.get_stock_bars("RNMBY")
+
+        mock_yahoo.assert_called_once()
+        assert len(df) == 1
+        assert df.iloc[0]["close"] == 10.25
+
+
+class TestYahooBarsParser:
+    """Unit tests for _fetch_yahoo_bars (httpx mocked — no network)."""
+
+    @staticmethod
+    def _chart_payload():
+        # Two trading days + one null-close (illiquid) day, as Yahoo returns.
+        return {
+            "chart": {
+                "result": [{
+                    "timestamp": [1704153600, 1704240000, 1704326400],
+                    "indicators": {"quote": [{
+                        "open": [10.0, 10.5, None],
+                        "high": [10.8, 11.0, None],
+                        "low": [9.9, 10.2, None],
+                        "close": [10.5, 10.9, None],
+                        "volume": [1000, 2000, None],
+                    }]},
+                }],
+            }
+        }
+
+    @staticmethod
+    def _cm_client(get_fn):
+        """Wrap a get() callable in a context-manager client."""
+
+        class _CM:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url):
+                return get_fn(url)
+
+        return _CM()
+
+    def test_parses_ohlcv_and_skips_null_close_days(self):
+        payload = self._chart_payload()
+        fake_resp = SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+        fake_client = self._cm_client(lambda url: fake_resp)
+
+        with patch("app.services.alpaca_client.httpx.Client", return_value=fake_client) as mock_cls:
+            df = _fetch_yahoo_bars("SMERY")
+
+        mock_cls.assert_called_once()
+        assert len(df) == 2  # null-close day dropped
+        assert list(df.columns) == [
+            "open", "high", "low", "close", "volume", "timestamp"
+        ]
+        assert df.iloc[0]["close"] == 10.5
+        assert df.iloc[1]["close"] == 10.9
+        assert df.iloc[1]["volume"] == 2000.0
+        # Unix seconds -> tz-aware datetime (matches Alpaca bar timestamps).
+        assert df.iloc[0]["timestamp"] == pd.Timestamp("2024-01-02", tz="UTC")
+
+    def test_tries_query2_after_query1_failure(self):
+        payload = self._chart_payload()
+        fail_resp = SimpleNamespace(
+            raise_for_status=lambda: (_ for _ in ()).throw(Exception("429")),
+            json=lambda: {},
+        )
+        ok_resp = SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+        calls = {"n": 0}
+
+        def fake_get(url):
+            calls["n"] += 1
+            if "query1" in url:
+                return fail_resp
+            return ok_resp
+
+        fake_client = self._cm_client(fake_get)
+        with patch("app.services.alpaca_client.httpx.Client", return_value=fake_client):
+            df = _fetch_yahoo_bars("RNMBY")
+
+        assert calls["n"] == 2  # query1 failed, query2 succeeded
+        assert len(df) == 2
+
+    def test_total_failure_returns_empty_dataframe(self):
+        fail_resp = SimpleNamespace(
+            raise_for_status=lambda: (_ for _ in ()).throw(Exception("boom")),
+            json=lambda: {},
+        )
+        fake_client = self._cm_client(lambda url: fail_resp)
+        with patch("app.services.alpaca_client.httpx.Client", return_value=fake_client):
+            df = _fetch_yahoo_bars("ZZZZ")
+
+        assert isinstance(df, pd.DataFrame)
+        assert df.empty
 
 
 class TestLatestQuote:
