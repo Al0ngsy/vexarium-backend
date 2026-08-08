@@ -55,6 +55,7 @@ def _build_response(sym: str, body: AnalysisRequest, df, indicator_results):
     return AnalysisResponse(
         symbol=sym,
         asset_type=body.asset_type,
+        timeframe=body.timeframe,
         current_price=current_price,
         day_change_pct=day_change_pct,
         analyzed_at=datetime.now(timezone.utc).isoformat(),
@@ -104,7 +105,7 @@ async def analyze(request: Request, body: AnalysisRequest):
         sym = validate_symbol(body.symbol)
         # Daily bars -> computed indicators only change once per day, so the whole
         # analysis result is cached per symbol per day (cheap repeat lookups).
-        key = analysis_key(sym)
+        key = analysis_key(sym, body.timeframe)
         cached = await cache_get(key)
         if cached is not None:
             try:
@@ -112,7 +113,7 @@ async def analyze(request: Request, body: AnalysisRequest):
             except Exception:
                 pass
         client = AlpacaClient()
-        df = client.get_stock_bars(sym)
+        df = client.get_stock_bars(sym, timeframe=body.timeframe)
         if df.empty:
             raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
         # All indicators are free (no more free/pro indicator split).

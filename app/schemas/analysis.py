@@ -31,6 +31,7 @@ class OverallVerdict(BaseModel):
 class AnalysisRequest(BaseModel):
     symbol: str
     asset_type: str = "stock"
+    timeframe: str = "1d"
     options_enabled: bool = False
     strike: Optional[float] = None  # used by the options-strategies AI endpoint
 
@@ -117,6 +118,7 @@ class CompanyInfo(BaseModel):
 class AnalysisResponse(BaseModel):
     symbol: str
     asset_type: str
+    timeframe: str = "1d"
     current_price: Optional[float] = None
     day_change_pct: Optional[float] = None
     analyzed_at: Optional[str] = None

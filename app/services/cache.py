@@ -179,8 +179,8 @@ def ai_lock_key(symbol: str) -> str:
     return f"ai_lock:{symbol}:{date.today().isoformat()}"
 
 
-def analysis_key(symbol: str) -> str:
+def analysis_key(symbol: str, timeframe: str = "1d") -> str:
     """Daily analysis result for a symbol. Indicators are computed from daily bars,
     so the computed result only changes once per day -> cache for the whole day."""
     from datetime import date
-    return f"analysis:{symbol}:{date.today().isoformat()}"
+    return f"analysis:{symbol}:{timeframe}:{date.today().isoformat()}"
