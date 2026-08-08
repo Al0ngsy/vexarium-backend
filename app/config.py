@@ -20,10 +20,16 @@ class Settings(BaseSettings):
     alpaca_secret_key: str = ""
     alpaca_paper: bool = True
 
-    # --- LLM (OpenCode Go — OpenAI-compatible endpoint) ---
-    llm_base_url: str = "https://opencode.ai/zen/go/v1"
+    # --- LLM (OpenCode Zen — OpenAI-compatible endpoint, free tier) ---
+    llm_base_url: str = "https://opencode.ai/zen/v1"
     llm_api_key: str = ""
-    llm_model: str = "deepseek-v4-flash"
+    llm_model: str = "deepseek-v4-flash-free"
+    # Comma-separated free fallback models, tried in order when the primary
+    # fails (rate limit, outage). All are OpenCode Zen free-tier IDs.
+    llm_fallback_models: str = (
+        "big-pickle,mimo-v2.5-free,ling-3.0-tiny-free,laguna-s-2.1-free,"
+        "longcat-2.0-free,north-mini-code-free,nemotron-3-ultra-free"
+    )
 
     # --- CORS ---
     cors_origins: str = "http://localhost:5173"

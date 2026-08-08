@@ -135,7 +135,7 @@ async def test_lock_in_memory_fallback():
 
 
 def test_keys():
-    assert bars_key("AAPL") == "bars:AAPL"
+    assert bars_key("AAPL") == "bars:AAPL:1d"
     assert quote_key("AAPL") == "quote:AAPL"
     assert news_key("AAPL") == "news:AAPL"
     assert ai_key("AAPL").startswith("ai:AAPL:")

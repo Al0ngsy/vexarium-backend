@@ -118,6 +118,7 @@ class AnalysisResponse(BaseModel):
     symbol: str
     asset_type: str
     current_price: Optional[float] = None
+    day_change_pct: Optional[float] = None
     analyzed_at: Optional[str] = None
     overall: OverallVerdict
     indicators: list[IndicatorResult]

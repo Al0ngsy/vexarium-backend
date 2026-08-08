@@ -32,10 +32,16 @@ logger = logging.getLogger("vexarium.api.analysis")
 
 def _build_response(sym: str, body: AnalysisRequest, df, indicator_results):
     """Compute the full AnalysisResponse payload (indicators, series, news)."""
+    client = AlpacaClient()
     overall = aggregate(indicator_results)
     current_price = float(df.iloc[-1]["close"]) if not df.empty else None
+    day_change_pct = None
+    try:
+        snap = client.get_market_snapshot(sym, df)
+        day_change_pct = snap.get("day_change_pct")
+    except Exception:
+        logger.warning("day_change unavailable for %s", sym, exc_info=True)
     price_series, indicator_series = _build_series_payload(df, indicator_results)
-    client = AlpacaClient()
     news, news_articles = fetch_news(client, sym)
     # Free, keyless company/ETF profile (Yahoo meta + Wikipedia summary). The
     # whole analysis is cached 24h, so this only runs once per symbol per day.
@@ -50,6 +56,7 @@ def _build_response(sym: str, body: AnalysisRequest, df, indicator_results):
         symbol=sym,
         asset_type=body.asset_type,
         current_price=current_price,
+        day_change_pct=day_change_pct,
         analyzed_at=datetime.now(timezone.utc).isoformat(),
         overall=OverallVerdict(
             overall_verdict=overall["overall_verdict"],
@@ -120,4 +127,35 @@ async def analyze(request: Request, body: AnalysisRequest):
         raise
     except Exception:
         logger.error("Analysis failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal error")
+
+
+@router.get("/bars/{symbol}", response_model=list[PricePoint])
+@limiter.limit(f"{settings.rate_limit_free}/minute")
+async def bars(
+    request: Request,
+    symbol: str,
+    timeframe: str = "1d",
+    limit: int = 300,
+):
+    """OHLC bars for the chart at a selectable resolution.
+
+    timeframe: 1m / 5m / 15m / 1h / 1d / 1w / 1mo. limit caps the number of
+    points returned (the widget renders the most recent `limit` bars).
+    """
+    try:
+        sym = validate_symbol(symbol)
+        client = AlpacaClient()
+        df = client.get_stock_bars(sym, timeframe=timeframe)
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
+        return build_price_series(df, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except AlpacaError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.error("Bars failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error")

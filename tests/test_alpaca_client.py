@@ -150,7 +150,7 @@ class TestStockBars:
         ) as mock_yahoo:
             df = client.get_stock_bars("SMERY")
 
-        mock_yahoo.assert_called_once_with("SMERY", 365)
+        mock_yahoo.assert_called_once_with("SMERY", 365, interval="1d")
         assert len(df) == 2
         assert df.iloc[-1]["close"] == 10.75
 

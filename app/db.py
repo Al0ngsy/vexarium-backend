@@ -18,9 +18,21 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from .config import settings
+
+
+def _ssl_for_url(database_url: str) -> str | bool:
+    """Pick the asyncpg ``ssl`` connect arg for a DATABASE_URL.
+
+    An explicit ``ssl=disable`` / ``sslmode=disable`` in the URL (local dev
+    Postgres has no TLS) disables SSL; anything else defaults to ``require``
+    for Neon/Render, which need TLS.
+    """
+    q = dict(parse_qsl(urlsplit(database_url).query))
+    mode = q.get("ssl", q.get("sslmode", "require"))
+    return False if mode == "disable" else "require"
 
 
 def _asyncpg_safe_url(database_url: str) -> str:
@@ -44,7 +56,9 @@ def _asyncpg_safe_url(database_url: str) -> str:
 def async_engine_for_url(database_url: str) -> AsyncEngine:
     """Build an async engine from a DATABASE_URL, configuring TLS for asyncpg."""
     url = _asyncpg_safe_url(database_url)
-    return create_async_engine(url, pool_pre_ping=True, connect_args={"ssl": "require"})
+    return create_async_engine(
+        url, pool_pre_ping=True, connect_args={"ssl": _ssl_for_url(database_url)}
+    )
 
 logger = logging.getLogger("vexarium.db")
 

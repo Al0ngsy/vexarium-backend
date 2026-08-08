@@ -1,7 +1,7 @@
 """Tests for the asyncpg-safe DATABASE_URL helper."""
 from __future__ import annotations
 
-from app.db import _asyncpg_safe_url
+from app.db import _asyncpg_safe_url, _ssl_for_url
 
 
 def test_strips_neon_query_params():
@@ -26,3 +26,20 @@ def test_handles_postgres_scheme():
 def test_plain_url_unchanged():
     url = "postgresql+asyncpg://u:p@h:5432/db"
     assert _asyncpg_safe_url(url) == url
+
+
+def test_ssl_defaults_to_require():
+    url = "postgresql://u:p@h:5432/db"
+    assert _ssl_for_url(url) == "require"
+
+
+def test_ssl_disable_honored():
+    assert _ssl_for_url("postgresql://u:p@h:5432/db?ssl=disable") is False
+
+
+def test_sslmode_disable_honored():
+    assert _ssl_for_url("postgresql://u:p@h:5432/db?sslmode=disable") is False
+
+
+def test_sslmode_require_keeps_require():
+    assert _ssl_for_url("postgresql://u:p@h:5432/db?sslmode=require") == "require"

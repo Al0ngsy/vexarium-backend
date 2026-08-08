@@ -146,8 +146,8 @@ CACHE_TTL_ANALYSIS = 24 * 3600 # computed analysis per symbol per day
 CACHE_TTL_OPTION_CHAIN = 15    # indicative/delayed options quotes; short TTL
 
 
-def bars_key(symbol: str) -> str:
-    return f"bars:{symbol}"
+def bars_key(symbol: str, timeframe: str = "1d") -> str:
+    return f"bars:{symbol}:{timeframe}"
 
 
 def quote_key(symbol: str) -> str:

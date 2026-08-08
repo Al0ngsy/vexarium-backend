@@ -38,6 +38,18 @@ _YAHOO_HEADERS = {
 _EMPTY_BARS_COLUMNS = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
 
 
+TIMEFRAMES: dict[str, tuple[int, TimeFrameUnit, int, str]] = {
+    # key -> (multiplier, unit, max days, yahoo interval)
+    "1m": (1, TimeFrameUnit.Minute, 5, "1m"),
+    "5m": (5, TimeFrameUnit.Minute, 60, "5m"),
+    "15m": (15, TimeFrameUnit.Minute, 60, "15m"),
+    "1h": (1, TimeFrameUnit.Hour, 730, "60m"),
+    "1d": (1, TimeFrameUnit.Day, 365, "1d"),
+    "1w": (1, TimeFrameUnit.Week, 1826, "1wk"),
+    "1mo": (1, TimeFrameUnit.Month, 7300, "1mo"),
+}
+
+
 def _yahoo_range(days: int) -> str:
     """Map a requested number of days to a Yahoo chart range parameter."""
     for limit, rng in (
@@ -49,8 +61,8 @@ def _yahoo_range(days: int) -> str:
     return '10y'
 
 
-def _fetch_yahoo_bars(symbol: str, days: int = 365) -> pd.DataFrame:
-    """Fetch daily OHLCV bars from Yahoo Finance v8 chart (keyless).
+def _fetch_yahoo_bars(symbol: str, days: int = 365, interval: str = "1d") -> pd.DataFrame:
+    """Fetch OHLCV bars from Yahoo Finance v8 chart (keyless).
 
     Fallback for symbols outside Alpaca's equity universe — e.g. OTC/Pink
     Sheet ADRs like SMERY (Siemens Energy) or RNMBY (Rheinmetall), which
@@ -65,7 +77,7 @@ def _fetch_yahoo_bars(symbol: str, days: int = 365) -> pd.DataFrame:
         try:
             url = (
                 f"https://{host}.finance.yahoo.com/v8/finance/chart/{symbol}"
-                f"?range={rng}&interval=1d"
+                f"?range={rng}&interval={interval}"
             )
             with httpx.Client(headers=_YAHOO_HEADERS, timeout=12.0) as client:
                 resp = client.get(url)
@@ -111,8 +123,17 @@ class AlpacaClient:
         self._news = NewsClient(*creds)
         self._trading = TradingClient(*creds, paper=settings.alpaca_paper)
 
-    def get_stock_bars(self, symbol: str, days: int = 365) -> pd.DataFrame:
-        key = bars_key(symbol)
+    def get_stock_bars(self, symbol: str, days: int = 365, timeframe: str = "1d") -> pd.DataFrame:
+        """Daily (or intraday/weekly/monthly) OHLCV bars for `symbol`.
+
+        `timeframe` is one of TIMEFRAMES keys: 1m/5m/15m/1h/1d/1w/1mo.
+        """
+        if timeframe not in TIMEFRAMES:
+            raise ValueError(f"unsupported timeframe: {timeframe}")
+        mult, unit, tf_days, yahoo_interval = TIMEFRAMES[timeframe]
+        if days > tf_days:
+            days = tf_days  # cap at what the data source offers
+        key = bars_key(symbol, timeframe)
         cached = run_coro(cache_get(key))
         if cached is not None:
             try:
@@ -124,7 +145,7 @@ class AlpacaClient:
         try:
             req = StockBarsRequest(
                 symbol_or_symbols=symbol,
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=TimeFrame(mult, unit),
                 start=datetime.now() - timedelta(days=days),
             )
             resp = self._stock.get_stock_bars(req)
@@ -138,8 +159,8 @@ class AlpacaClient:
                 bars = []
             if not bars:
                 # OTC/Pink-Sheet ADRs (SMERY, RNMBY, …) return no bars from
-                # Alpaca. Fall back to keyless Yahoo daily bars before giving up.
-                df = _fetch_yahoo_bars(symbol, days)
+                # Alpaca. Fall back to keyless Yahoo bars before giving up.
+                df = _fetch_yahoo_bars(symbol, days, interval=yahoo_interval)
                 if not df.empty:
                     run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
                     return df
