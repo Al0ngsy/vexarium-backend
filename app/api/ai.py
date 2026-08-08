@@ -32,14 +32,14 @@ async def _ai_access(request: Request, body: AnalysisRequest) -> str:
     return await get_user_tier(token)
 
 
-def _build_context(sym: str) -> tuple:
+def _build_context(sym: str, timeframe: str = "1d") -> tuple:
     """Assemble everything the LLM prompt needs for a symbol.
 
     Returns (df, indicator_results, overall, news, articles, market_data,
     company_info, prompt). Raises on upstream failures the caller must handle.
     """
     client = AlpacaClient()
-    df = client.get_stock_bars(sym)
+    df = client.get_stock_bars(sym, timeframe=timeframe)
     if df.empty:
         raise ValueError("No data available.")
     engine = create_pro_engine()
@@ -79,9 +79,10 @@ def _make_result(sym: str, text: str, news, articles, market_data) -> dict:
 @limiter.limit(f"{settings.rate_limit_ai}/minute")
 async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = Depends(_ai_access)):
     sym = validate_symbol(body.symbol)
+    tf = body.timeframe or "1d"
 
     async def _cached_or_none():
-        return await cache_get(ai_key(sym))
+        return await cache_get(ai_key(sym, tf))
 
     try:
         cached = await _cached_or_none()
@@ -92,7 +93,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
         # request (same user refreshing, or a different user) is already
         # generating this symbol, wait for its result instead of firing a
         # duplicate 50-90s LLM call.
-        lock_key = ai_lock_key(sym)
+        lock_key = ai_lock_key(sym, tf)
         if not await lock_acquire(lock_key, ttl=180):
             # Someone else is generating — poll for the result (up to ~2 min).
             waited = 0
@@ -111,7 +112,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
                 if not await lock_acquire(lock_key, ttl=180):
                     return {"symbol": sym, "analysis": "AI analysis in progress. Please retry in a moment.", "model": settings.llm_model}
 
-        _, _, _, news, articles, market_data, _, prompt = _build_context(sym)
+        _, _, _, news, articles, market_data, _, prompt = _build_context(sym, tf)
         text = await llm_analyze(prompt)
         # Never cache failure text: a transient LLM outage must not poison the
         # 24h per-symbol cache (the fallback would be served to every user all
@@ -125,7 +126,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
             logger.warning("AI answer for %s missing disclaimer footer — not caching (%d chars)", sym, len(text))
             return _make_result(sym, text, news, articles, market_data)
         result = _make_result(sym, text, news, articles, market_data)
-        await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
+        await cache_set(ai_key(sym, tf), result, ttl=CACHE_TTL_AI)
         return result
     except ValueError as e:
         return {"symbol": sym, "analysis": str(e), "model": settings.llm_model}
@@ -133,7 +134,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
         logger.error("AI analysis failed", exc_info=True)
         return {"symbol": sym, "analysis": "AI analysis temporarily unavailable.", "model": settings.llm_model}
     finally:
-        await lock_release(ai_lock_key(sym))
+        await lock_release(ai_lock_key(sym, tf))
 
 
 @router.post("/ai/stream")
@@ -152,9 +153,10 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
     from ..services.ai_analyzer import analyze_stream
 
     sym = validate_symbol(body.symbol)
+    tf = body.timeframe or "1d"
 
     async def _cached_or_none():
-        return await cache_get(ai_key(sym))
+        return await cache_get(ai_key(sym, tf))
 
     async def _stream_text(text: str, chunk_size: int = 24, delay: float = 0.03):
         """Replay stored text in small chunks (illusion of live generation)."""
@@ -172,7 +174,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
                 return
 
             # Single-flight (same as the non-streaming endpoint).
-            lock_key = ai_lock_key(sym)
+            lock_key = ai_lock_key(sym, tf)
             acquired = await lock_acquire(lock_key, ttl=180)
             if not acquired:
                 waited = 0
@@ -192,7 +194,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
                     yield "data: " + json.dumps({"done": True}) + "\n\n"
                     return
 
-            _, _, _, news, articles, market_data, _, prompt = _build_context(sym)
+            _, _, _, news, articles, market_data, _, prompt = _build_context(sym, tf)
             parts = []
             try:
                 async for token in analyze_stream(prompt):
@@ -218,7 +220,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
                 return
             result = _make_result(sym, text, news, articles, market_data)
-            await cache_set(ai_key(sym), result, ttl=CACHE_TTL_AI)
+            await cache_set(ai_key(sym, tf), result, ttl=CACHE_TTL_AI)
             yield "data: " + json.dumps({"done": True}) + "\n\n"
         except ValueError as e:
             yield "data: " + json.dumps({"chunk": str(e)}) + "\n\n"
@@ -228,7 +230,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
             yield "data: " + json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
             yield "data: " + json.dumps({"done": True}) + "\n\n"
         finally:
-            await lock_release(ai_lock_key(sym))
+            await lock_release(ai_lock_key(sym, tf))
 
     return StreamingResponse(
         event_generator(),

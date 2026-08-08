@@ -72,7 +72,7 @@ def small_df() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-VALID_VERDICTS = {"strong_buy", "buy", "hold", "sell", "strong_sell"}
+VALID_VERDICTS = {"strong_buy", "buy", "hold", "sell", "strong_sell", "none"}
 
 
 def test_rsi_value_range(sample_df):
@@ -204,7 +204,7 @@ def test_compute_all_handles_failing_indicator(sample_df):
     results = engine.compute_all(sample_df)
     assert len(results) == 2
     boom_result = [r for r in results if r.name == "Boom"][0]
-    assert boom_result.verdict == "hold"
+    assert boom_result.verdict == "none"
     assert boom_result.value is None
     assert boom_result.note is not None
     # The good indicator still ran
@@ -212,10 +212,10 @@ def test_compute_all_handles_failing_indicator(sample_df):
     assert rsi_result.value is not None
 
 
-def test_insufficient_data_returns_hold(small_df):
-    """Not enough rows for EMA(200) → hold verdict with a note."""
+def test_insufficient_data_returns_none(small_df):
+    """Not enough rows for EMA(200) → 'none' verdict with a note (not 'hold')."""
     result = SMAEMAIndicator.evaluate(small_df)
-    assert result.verdict == "hold"
+    assert result.verdict == "none"
     assert result.value is None
     assert result.note is not None
     assert "insufficient" in result.note
@@ -224,9 +224,10 @@ def test_insufficient_data_returns_hold(small_df):
 def test_insufficient_data_in_engine(small_df):
     engine = create_default_engine()
     results = engine.compute_all(small_df)
-    # All should gracefully return hold (not enough data)
+    # Every core indicator needs more than 10 rows — all are uncomputable.
     for r in results:
-        assert r.verdict in VALID_VERDICTS
+        assert r.verdict == "none"
+        assert r.value is None
 
 
 def test_replace_indicator():

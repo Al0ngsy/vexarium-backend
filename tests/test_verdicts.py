@@ -111,3 +111,31 @@ def test_works_with_objects():
     assert out["score"] == 6
     assert out["overall_verdict"] == "strong_buy"
     assert out["breakdown"][0]["name"] == "a"
+
+
+def test_none_verdicts_excluded():
+    """Uncomputable ('none') indicators are skipped from score, breakdown, count."""
+    results = [
+        _result("a", "strong_buy"),
+        _result("b", "none"),
+        _result("c", "buy"),
+    ]
+    out = aggregate(results)
+    # 2 + 1 = 3 → buy
+    assert out["score"] == 3
+    assert out["overall_verdict"] == "buy"
+    assert out["indicator_count"] == 2
+    assert out["breakdown"] == [
+        {"name": "a", "verdict": "strong_buy"},
+        {"name": "c", "verdict": "buy"},
+    ]
+
+
+def test_all_none_returns_empty_aggregate():
+    out = aggregate([_result("x", "none"), _result("y", "none")])
+    assert out == {
+        "overall_verdict": "hold",
+        "score": 0,
+        "breakdown": [],
+        "indicator_count": 0,
+    }

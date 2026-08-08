@@ -54,13 +54,16 @@ def aggregate(indicator_results: list[Any]) -> dict:
     ----------
     indicator_results
         List of objects or dicts each having ``name`` and ``verdict`` attributes.
+        Results with verdict ``none`` (indicator could not be computed) are
+        excluded entirely — from the score, the breakdown, and the count.
 
     Returns
     -------
     dict with keys: ``overall_verdict``, ``score``, ``breakdown``,
     ``indicator_count``.
     """
-    if not indicator_results:
+    computed = [r for r in indicator_results if _extract(r)[1] != "none"]
+    if not computed:
         return {
             "overall_verdict": "hold",
             "score": 0,
@@ -70,7 +73,7 @@ def aggregate(indicator_results: list[Any]) -> dict:
 
     total = 0
     breakdown: list[dict[str, str]] = []
-    for result in indicator_results:
+    for result in computed:
         name, verdict = _extract(result)
         score = VERDICT_SCORES.get(verdict, 0)
         total += score
@@ -80,5 +83,5 @@ def aggregate(indicator_results: list[Any]) -> dict:
         "overall_verdict": _score_bucket(total),
         "score": total,
         "breakdown": breakdown,
-        "indicator_count": len(indicator_results),
+        "indicator_count": len(computed),
     }

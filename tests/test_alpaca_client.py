@@ -90,7 +90,11 @@ class TestStockBars:
         resp = SimpleNamespace(data={"AAPL": bars})
         client._stock.get_stock_bars.return_value = resp
 
-        df = client.get_stock_bars("AAPL")
+        with patch(
+            "app.services.alpaca_client._fetch_yahoo_bars",
+            return_value=pd.DataFrame(columns=["open", "high", "low", "close", "volume", "timestamp"]),
+        ):
+            df = client.get_stock_bars("AAPL")
 
         assert isinstance(df, pd.DataFrame)
         assert list(df.columns) == [
@@ -99,6 +103,42 @@ class TestStockBars:
         assert len(df) == 1
         assert df.iloc[0]["close"] == 100.5
         assert df.iloc[0]["volume"] == 1000.0
+
+    def test_shallow_alpaca_bars_upgraded_by_yahoo(self, client):
+        """Alpaca free tier (IEX) serves only ~2y — too-shallow bars are
+        replaced by the longer keyless Yahoo series (SMA(50)/EMA(200) need 201)."""
+        ts = datetime.now(timezone.utc)
+        bars = [make_bar(100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 1000, ts) for i in range(50)]
+        resp = SimpleNamespace(data={"AAPL": bars})
+        client._stock.get_stock_bars.return_value = resp
+        yahoo_df = pd.DataFrame({
+            "open": [10.0] * 300, "high": [11.0] * 300, "low": [9.5] * 300,
+            "close": [10.25] * 300, "volume": [1000.0] * 300,
+            "timestamp": pd.date_range("2020-01-01", periods=300, freq="W"),
+        })
+
+        with patch(
+            "app.services.alpaca_client._fetch_yahoo_bars",
+            return_value=yahoo_df,
+        ) as mock_yahoo:
+            df = client.get_stock_bars("AAPL")
+
+        mock_yahoo.assert_called_once_with("AAPL", 365, interval="1d")
+        assert len(df) == 300  # longer series wins
+        assert df.iloc[0]["close"] == 10.25
+
+    def test_deep_alpaca_bars_skip_yahoo(self, client):
+        """≥201 Alpaca bars are deep enough for all indicators — no Yahoo call."""
+        ts = datetime.now(timezone.utc)
+        bars = [make_bar(100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 1000, ts) for i in range(250)]
+        resp = SimpleNamespace(data={"AAPL": bars})
+        client._stock.get_stock_bars.return_value = resp
+
+        with patch("app.services.alpaca_client._fetch_yahoo_bars") as mock_yahoo:
+            df = client.get_stock_bars("AAPL")
+
+        mock_yahoo.assert_not_called()
+        assert len(df) == 250
 
     def test_empty_data_returns_empty_dataframe(self, client):
         resp = SimpleNamespace(data={"AAPL": []})

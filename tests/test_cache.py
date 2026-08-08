@@ -138,8 +138,10 @@ def test_keys():
     assert bars_key("AAPL") == "bars:AAPL:1d"
     assert quote_key("AAPL") == "quote:AAPL"
     assert news_key("AAPL") == "news:AAPL"
-    assert ai_key("AAPL").startswith("ai:AAPL:")
-    # ai_key includes today's date
+    assert ai_key("AAPL").startswith("ai:AAPL:1d:")
+    # ai_key includes the timeframe and today's date
     from datetime import date
-    assert ai_key("AAPL") == f"ai:AAPL:{date.today().isoformat()}"
-    assert ai_lock_key("AAPL").startswith("ai_lock:AAPL:")
+    assert ai_key("AAPL") == f"ai:AAPL:1d:{date.today().isoformat()}"
+    assert ai_key("AAPL", "4h") == f"ai:AAPL:4h:{date.today().isoformat()}"
+    assert ai_lock_key("AAPL").startswith("ai_lock:AAPL:1d:")
+    assert ai_lock_key("AAPL", "4h").startswith("ai_lock:AAPL:4h:")

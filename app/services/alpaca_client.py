@@ -56,11 +56,11 @@ def _yahoo_range(days: int) -> str:
     """Map a requested number of days to a Yahoo chart range parameter."""
     for limit, rng in (
         (31, '1mo'), (92, '3mo'), (183, '6mo'), (365, '1y'),
-        (730, '2y'), (1826, '5y'),
+        (730, '2y'), (1826, '5y'), (7300, 'max'),
     ):
         if days <= limit:
             return rng
-    return '10y'
+    return 'max'
 
 
 def _fetch_yahoo_bars(symbol: str, days: int = 365, interval: str = "1d") -> pd.DataFrame:
@@ -178,6 +178,14 @@ class AlpacaClient:
                     'timestamp': bar.timestamp,
                 })
             df = pd.DataFrame(rows)
+            # Alpaca free tier (IEX) only serves ~2 years of history — 1w/1mo
+            # timeframes come back with ~104/~24 rows, too few for SMA(50)/
+            # EMA(200) (min_rows 201). Yahoo serves 5-10y+, so when Alpaca's
+            # bars are too shallow, fetch the Yahoo series and keep the longer.
+            if len(df) < 201:
+                yahoo_df = _fetch_yahoo_bars(symbol, days, interval=yahoo_interval)
+                if len(yahoo_df) > len(df):
+                    df = yahoo_df
             run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
             return df
         except Exception as e:

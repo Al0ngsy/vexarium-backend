@@ -1,6 +1,7 @@
 """Extended indicators for VEXARIUM.
 
-Implements ATR, ADX, OBV, VWAP, and Ichimoku following the exact Indicator
+Implements ATR, ADX, OBV, VWAP, Ichimoku, CCI, Williams %R, MFI, ROC,
+PSAR, and CMO following the exact Indicator
 pattern used in ``app.services.indicator_engine`` (dataclass ``Indicator`` with
 ``name`` / ``compute`` / ``verdict`` / ``min_rows``). All indicators
 here are registered alongside the core set.
@@ -242,6 +243,224 @@ IchimokuIndicator = Indicator(
 
 
 # ---------------------------------------------------------------------------
+# CCI(20) — Commodity Channel Index
+# ---------------------------------------------------------------------------
+
+
+def _cci_compute(df: pd.DataFrame) -> Optional[float]:
+    cci = ta.cci(df["high"], df["low"], df["close"], length=20)
+    if cci is None or cci.dropna().empty:
+        return None
+    val = cci.dropna().iloc[-1]
+    return float(val) if not pd.isna(val) else None
+
+
+def _cci_verdict(value: Any) -> str:
+    if value is None:
+        return "hold"
+    if value < -100:
+        return "strong_buy"
+    if value < -60:
+        return "buy"
+    if value < 60:
+        return "hold"
+    if value < 100:
+        return "sell"
+    return "strong_sell"
+
+
+CCIIndicator = Indicator(
+    name="CCI(20)",
+    compute=_cci_compute,
+    verdict=_cci_verdict,
+    min_rows=21,
+)
+
+
+# ---------------------------------------------------------------------------
+# Williams %R(14)
+# ---------------------------------------------------------------------------
+
+
+def _willr_compute(df: pd.DataFrame) -> Optional[float]:
+    willr = ta.willr(df["high"], df["low"], df["close"], length=14)
+    if willr is None or willr.dropna().empty:
+        return None
+    val = willr.dropna().iloc[-1]
+    return float(val) if not pd.isna(val) else None
+
+
+def _willr_verdict(value: Any) -> str:
+    if value is None:
+        return "hold"
+    if value < -80:
+        return "strong_buy"
+    if value < -60:
+        return "buy"
+    if value < -40:
+        return "hold"
+    if value < -20:
+        return "sell"
+    return "strong_sell"
+
+
+WILLRIndicator = Indicator(
+    name="Williams %R(14)",
+    compute=_willr_compute,
+    verdict=_willr_verdict,
+    min_rows=15,
+)
+
+
+# ---------------------------------------------------------------------------
+# MFI(14) — Money Flow Index
+# ---------------------------------------------------------------------------
+
+
+def _mfi_compute(df: pd.DataFrame) -> Optional[float]:
+    mfi = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14)
+    if mfi is None or mfi.dropna().empty:
+        return None
+    val = mfi.dropna().iloc[-1]
+    return float(val) if not pd.isna(val) else None
+
+
+def _mfi_verdict(value: Any) -> str:
+    if value is None:
+        return "hold"
+    if value < 20:
+        return "strong_buy"
+    if value < 40:
+        return "buy"
+    if value < 60:
+        return "hold"
+    if value < 80:
+        return "sell"
+    return "strong_sell"
+
+
+MFIIndicator = Indicator(
+    name="MFI(14)",
+    compute=_mfi_compute,
+    verdict=_mfi_verdict,
+    min_rows=15,
+)
+
+
+# ---------------------------------------------------------------------------
+# ROC(12) — Rate of Change
+# ---------------------------------------------------------------------------
+
+
+def _roc_compute(df: pd.DataFrame) -> Optional[float]:
+    roc = ta.roc(df["close"], length=12)
+    if roc is None or roc.dropna().empty:
+        return None
+    val = roc.dropna().iloc[-1]
+    return float(val) if not pd.isna(val) else None
+
+
+def _roc_verdict(value: Any) -> str:
+    if value is None:
+        return "hold"
+    if value > 5:
+        return "strong_buy"
+    if value > 1:
+        return "buy"
+    if value > -1:
+        return "hold"
+    if value > -5:
+        return "sell"
+    return "strong_sell"
+
+
+ROCIndicator = Indicator(
+    name="ROC(12)",
+    compute=_roc_compute,
+    verdict=_roc_verdict,
+    min_rows=13,
+)
+
+
+# ---------------------------------------------------------------------------
+# PSAR — Parabolic SAR
+# ---------------------------------------------------------------------------
+
+
+def _psar_compute(df: pd.DataFrame) -> Optional[dict]:
+    psar = ta.psar(df["high"], df["low"], df["close"])
+    if psar is None or psar.empty:
+        return None
+    # Columns: PSARl_* (long/up), PSARs_* (short/down) — mutually exclusive
+    # per row. There is no trend column; presence of PSARl_/PSARs_ is the trend.
+    long_col = [c for c in psar.columns if c.startswith("PSARl_")]
+    short_col = [c for c in psar.columns if c.startswith("PSARs_")]
+    if not (long_col and short_col):
+        return None
+    row = psar.iloc[-1]
+    long_val = row[long_col[0]]
+    short_val = row[short_col[0]]
+    if not pd.isna(long_val):
+        return {"psar": float(long_val), "trend": "up"}
+    if not pd.isna(short_val):
+        return {"psar": float(short_val), "trend": "down"}
+    return None
+
+
+def _psar_verdict(value: Any) -> str:
+    if value is None or not isinstance(value, dict):
+        return "hold"
+    if value.get("trend") == "up":
+        return "buy"
+    if value.get("trend") == "down":
+        return "sell"
+    return "hold"
+
+
+PSARIndicator = Indicator(
+    name="PSAR",
+    compute=_psar_compute,
+    verdict=_psar_verdict,
+    min_rows=5,
+)
+
+
+# ---------------------------------------------------------------------------
+# CMO(14) — Chande Momentum Oscillator
+# ---------------------------------------------------------------------------
+
+
+def _cmo_compute(df: pd.DataFrame) -> Optional[float]:
+    cmo = ta.cmo(df["close"], length=14)
+    if cmo is None or cmo.dropna().empty:
+        return None
+    val = cmo.dropna().iloc[-1]
+    return float(val) if not pd.isna(val) else None
+
+
+def _cmo_verdict(value: Any) -> str:
+    if value is None:
+        return "hold"
+    if value < -50:
+        return "strong_buy"
+    if value < -25:
+        return "buy"
+    if value < 25:
+        return "hold"
+    if value < 50:
+        return "sell"
+    return "strong_sell"
+
+
+CMOIndicator = Indicator(
+    name="CMO(14)",
+    compute=_cmo_compute,
+    verdict=_cmo_verdict,
+    min_rows=15,
+)
+
+
+# ---------------------------------------------------------------------------
 # Pro engine factory
 # ---------------------------------------------------------------------------
 
@@ -250,7 +469,8 @@ def create_pro_engine() -> IndicatorEngine:
     """Return an engine with all free + pro indicators registered.
 
     Reuses the same free registry as ``create_default_engine`` and extends it
-    with the 5 extended indicators (ATR, ADX, OBV, VWAP, Ichimoku).
+    with the extended indicators (ATR, ADX, OBV, VWAP, Ichimoku, CCI,
+    Williams %R, MFI, ROC, PSAR, CMO).
     """
     engine = create_default_engine()
     engine.register(ATRIndicator)
@@ -258,4 +478,10 @@ def create_pro_engine() -> IndicatorEngine:
     engine.register(OBVIndicator)
     engine.register(VWAPIndicator)
     engine.register(IchimokuIndicator)
+    engine.register(CCIIndicator)
+    engine.register(WILLRIndicator)
+    engine.register(MFIIndicator)
+    engine.register(ROCIndicator)
+    engine.register(PSARIndicator)
+    engine.register(CMOIndicator)
     return engine

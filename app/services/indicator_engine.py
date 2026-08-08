@@ -2,7 +2,9 @@
 
 Provides a pluggable registry of technical-analysis indicators. Each indicator
 computes a value (or dict of values) from an OHLCV DataFrame and maps that value
-to one of five verdicts: strong_buy, buy, hold, sell, strong_sell.
+to one of six verdicts: strong_buy, buy, hold, sell, strong_sell, none
+(``none`` marks an indicator that could not be computed — insufficient data or
+a compute error — and is excluded from aggregation).
 
 New indicators can be registered without touching existing code::
 
@@ -38,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Types
 # ---------------------------------------------------------------------------
 
-VERDICTS = ("strong_buy", "buy", "hold", "sell", "strong_sell")
+VERDICTS = ("strong_buy", "buy", "hold", "sell", "strong_sell", "none")
 
 
 @dataclass
@@ -77,7 +79,7 @@ class Indicator:
             return IndicatorResult(
                 name=self.name,
                 value=None,
-                verdict="hold",
+                verdict="none",
                 note=f"insufficient data: have {len(df)} rows, need {self.min_rows}",
             )
         try:
@@ -87,21 +89,21 @@ class Indicator:
             return IndicatorResult(
                 name=self.name,
                 value=None,
-                verdict="hold",
+                verdict="none",
                 note=f"compute error: {exc}",
             )
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return IndicatorResult(
                 name=self.name,
                 value=None,
-                verdict="hold",
+                verdict="none",
                 note="no value produced",
             )
         try:
             verdict = self.verdict(value)
         except Exception as exc:  # noqa: BLE001
             logger.error("Indicator %s verdict failed: %s", self.name, exc)
-            verdict = "hold"
+            verdict = "none"
         return IndicatorResult(
             name=self.name,
             value=value,
@@ -149,7 +151,7 @@ class IndicatorEngine:
                     IndicatorResult(
                         name=name,
                         value=None,
-                        verdict="hold",
+                        verdict="none",
                         note=f"evaluate error: {exc}",
                     )
                 )
@@ -390,9 +392,15 @@ def create_pro_engine() -> IndicatorEngine:
     from app.services.indicators.extended import (  # noqa: PLC0415
         ADXIndicator,
         ATRIndicator,
+        CCIIndicator,
+        CMOIndicator,
         IchimokuIndicator,
+        MFIIndicator,
         OBVIndicator,
+        PSARIndicator,
+        ROCIndicator,
         VWAPIndicator,
+        WILLRIndicator,
     )
 
     engine = create_default_engine()
@@ -401,4 +409,10 @@ def create_pro_engine() -> IndicatorEngine:
     engine.register(OBVIndicator)
     engine.register(VWAPIndicator)
     engine.register(IchimokuIndicator)
+    engine.register(CCIIndicator)
+    engine.register(WILLRIndicator)
+    engine.register(MFIIndicator)
+    engine.register(ROCIndicator)
+    engine.register(PSARIndicator)
+    engine.register(CMOIndicator)
     return engine

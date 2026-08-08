@@ -167,16 +167,16 @@ def option_chain_key(symbol: str) -> str:
     return f"optchain:{symbol}"
 
 
-def ai_key(symbol: str) -> str:
+def ai_key(symbol: str, timeframe: str = "1d") -> str:
     from datetime import date
-    return f"ai:{symbol}:{date.today().isoformat()}"
+    return f"ai:{symbol}:{timeframe}:{date.today().isoformat()}"
 
 
-def ai_lock_key(symbol: str) -> str:
+def ai_lock_key(symbol: str, timeframe: str = "1d") -> str:
     """Single-flight lock so concurrent AI requests for the same symbol wait
     for the in-flight LLM call instead of firing duplicate ones."""
     from datetime import date
-    return f"ai_lock:{symbol}:{date.today().isoformat()}"
+    return f"ai_lock:{symbol}:{timeframe}:{date.today().isoformat()}"
 
 
 def analysis_key(symbol: str, timeframe: str = "1d") -> str:

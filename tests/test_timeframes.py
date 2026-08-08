@@ -46,13 +46,15 @@ def test_get_stock_bars_passes_timeframe_to_alpaca(mock_coro):
     client._stock.get_stock_bars.return_value = resp
 
     with patch("app.services.alpaca_client._fetch_yahoo_bars") as mock_yahoo:
-        mock_yahoo.return_value = pd.DataFrame()  # not reached — Alpaca has data
+        # 1 Alpaca bar < 201 → Yahoo fallback fires; empty Yahoo df → Alpaca kept.
+        mock_yahoo.return_value = pd.DataFrame()
         df = client.get_stock_bars("AAPL", timeframe="1h")
 
     call = client._stock.get_stock_bars.call_args
     req = call.kwargs["request_params"] if "request_params" in call.kwargs else call.args[0]
     assert not df.empty
-    assert mock_yahoo.call_count == 0
+    assert len(df) == 1  # Alpaca bars kept (Yahoo returned nothing longer)
+    mock_yahoo.assert_called_once_with("AAPL", 365, interval="60m")
     # stock bars request carries the timeframe — accept either arg position
     kwargs = call.kwargs
     req_obj = kwargs.get("request_params") or kwargs.get("request") or call.args[0]
