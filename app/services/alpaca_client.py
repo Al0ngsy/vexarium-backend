@@ -5,7 +5,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import pandas as pd
 import httpx
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from typing import Optional
 from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDataClient
 from alpaca.data.historical.news import NewsClient
@@ -728,21 +728,3 @@ class AlpacaClient:
             if extra:
                 return extra
             raise AlpacaError(f"Failed to fetch news for {symbol}")
-
-    def get_market_calendar(self, start: str = None, end: str = None) -> list:
-        try:
-            from alpaca.trading.requests import GetCalendarRequest
-            if start is None:
-                start = date.today().isoformat()
-            if end is None:
-                end = (date.today() + timedelta(days=30)).isoformat()
-            req = GetCalendarRequest(start=start, end=end)
-            resp = self._trading.get_calendar(req)
-            result = []
-            for day in resp:
-                d = day.model_dump() if hasattr(day, 'model_dump') else dict(day)
-                result.append(d)
-            return result
-        except Exception as e:
-            logger.error("Alpaca get_market_calendar failed: %s", e)
-            raise AlpacaError("Failed to fetch market calendar")

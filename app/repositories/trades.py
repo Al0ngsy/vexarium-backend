@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Optional
 
 class InMemoryTradeRepository:
+    # ponytail: in-memory only — trades vanish on restart. Ship Postgres-backed
+    # trades (models/trade.py already exists) before this feature goes live.
     def __init__(self):
         self._trades: dict[int, dict] = {}
         self._next_id = 1
