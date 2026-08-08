@@ -17,7 +17,7 @@ def test_bars_key_includes_timeframe():
 
 
 def test_timestamps_map_has_all_resolutions():
-    assert set(TIMEFRAMES) == {"1m", "5m", "15m", "1h", "1d", "1w", "1mo"}
+    assert set(TIMEFRAMES) == {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mo"}
     # (mult, unit, max_days, yahoo_interval) — each resolution has a Yahoo interval
     for key, (mult, unit, days, yahoo) in TIMEFRAMES.items():
         assert mult >= 1

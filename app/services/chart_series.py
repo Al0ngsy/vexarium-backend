@@ -5,14 +5,16 @@ import pandas as pd
 
 
 def build_price_series(df: pd.DataFrame, limit: int = 120) -> list[dict]:
-    """Return last `limit` OHLC points as {t, open, high, low, close}."""
+    """Return last `limit` OHLC points as {t, open, high, low, close}.
+
+    `t` is the full ISO timestamp, not date-only — intraday timeframes
+    (1m/5m/15m/…) would otherwise collapse every bar of a day onto one time
+    and the chart renders nothing.
+    """
     out = []
     for _, row in df.tail(limit).iterrows():
         ts = row.get("timestamp")
-        if hasattr(ts, "strftime"):
-            t = ts.strftime("%Y-%m-%d")
-        else:
-            t = str(ts)[:10]
+        t = ts.isoformat() if isinstance(ts, pd.Timestamp) else str(ts)
         out.append({
             "t": t,
             "open": round(float(row["open"]), 4),

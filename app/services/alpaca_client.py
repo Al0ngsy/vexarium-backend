@@ -43,7 +43,9 @@ TIMEFRAMES: dict[str, tuple[int, TimeFrameUnit, int, str]] = {
     "1m": (1, TimeFrameUnit.Minute, 5, "1m"),
     "5m": (5, TimeFrameUnit.Minute, 60, "5m"),
     "15m": (15, TimeFrameUnit.Minute, 60, "15m"),
+    "30m": (30, TimeFrameUnit.Minute, 60, "30m"),
     "1h": (1, TimeFrameUnit.Hour, 730, "60m"),
+    "4h": (4, TimeFrameUnit.Hour, 730, "60m"),  # ponytail: Yahoo has no 4h interval; OTC fallback serves 1h bars
     "1d": (1, TimeFrameUnit.Day, 365, "1d"),
     "1w": (1, TimeFrameUnit.Week, 1826, "1wk"),
     "1mo": (1, TimeFrameUnit.Month, 7300, "1mo"),

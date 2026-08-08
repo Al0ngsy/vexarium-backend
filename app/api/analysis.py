@@ -83,7 +83,7 @@ def _build_series_payload(df, indicator_results):
         pts = [
             {"t": ts, "v": v}
             for ts, v in zip(
-                [str(x)[:10] for x in df.tail(120)["timestamp"]],
+                [x.isoformat() if hasattr(x, "isoformat") else str(x) for x in df.tail(120)["timestamp"]],
                 series[-120:] if series else [],
             )
         ]
