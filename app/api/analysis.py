@@ -83,8 +83,8 @@ def _build_series_payload(df, indicator_results):
         pts = [
             {"t": ts, "v": v}
             for ts, v in zip(
-                [x.isoformat() if hasattr(x, "isoformat") else str(x) for x in df.tail(120)["timestamp"]],
-                series[-120:] if series else [],
+                [x.isoformat() if hasattr(x, "isoformat") else str(x) for x in df["timestamp"]],
+                series if series else [],
             )
         ]
         pts = [p for p in pts if p["v"] is not None]
