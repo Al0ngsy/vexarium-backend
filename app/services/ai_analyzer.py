@@ -117,27 +117,20 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
     return f"{SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}\n\nProvide your analysis:"
 
 
-# Paid terminal fallback, tried only when every free model in the chain has
-# failed (e.g. the free tier is rate-limited). Same /zen/v1 endpoint + key.
-PAID_FALLBACK_MODEL = "deepseek-v4-flash"
-
-
 def _model_chain() -> list[str]:
     """Primary LLM + free fallback models, deduped, in attempt order.
 
-    Always ends with the paid `deepseek-v4-flash` so a rate-limited free tier
-    still yields an answer instead of "temporarily unavailable".
+    Always ends with the paid terminal fallback (`settings.llm_paid_fallback`)
+    so a rate-limited free tier still yields an answer instead of
+    "temporarily unavailable".
     """
     models = [settings.llm_model] + [
         m.strip() for m in settings.llm_fallback_models.split(",") if m.strip()
     ]
     seen: set[str] = set()
     chain = [m for m in models if not (m in seen or seen.add(m))]
-    # ponytail: terminal paid fallback is hardcoded, not env-driven, so it
-    # reaches Render without a dashboard env edit; promote to a setting if
-    # cost control (disabling it) is ever needed.
-    if PAID_FALLBACK_MODEL not in chain:
-        chain.append(PAID_FALLBACK_MODEL)
+    if settings.llm_paid_fallback and settings.llm_paid_fallback not in chain:
+        chain.append(settings.llm_paid_fallback)
     return chain
 
 

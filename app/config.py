@@ -25,13 +25,15 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-v4-flash-free"
     # Comma-separated free fallback models, tried in order when the primary
-    # fails (rate limit, outage). All are OpenCode Zen free-tier IDs. The
-    # chain always ends with the paid `deepseek-v4-flash` terminal fallback
-    # (hardcoded in ai_analyzer._model_chain).
+    # fails (rate limit, outage). All are OpenCode Zen free-tier IDs.
     llm_fallback_models: str = (
         "big-pickle,mimo-v2.5-free,ling-3.0-tiny-free,laguna-s-2.1-free,"
         "longcat-2.0-free,north-mini-code-free,nemotron-3-ultra-free"
     )
+    # Paid terminal fallback, appended after the free chain in
+    # ai_analyzer._model_chain(). Empty string disables it (a rate-limited
+    # free tier then surfaces as "temporarily unavailable").
+    llm_paid_fallback: str = "deepseek-v4-flash"
 
     # --- CORS ---
     cors_origins: str = "http://localhost:5173"

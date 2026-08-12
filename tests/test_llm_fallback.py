@@ -13,7 +13,7 @@ def test_model_chain_primary_first_deduped():
         ai_analyzer.settings,
         "llm_fallback_models",
         "big-pickle,mimo-v2.5-free,deepseek-v4-flash-free,north-mini-code-free",
-    ):
+    ), patch.object(ai_analyzer.settings, "llm_paid_fallback", "deepseek-v4-flash"):
         chain = _model_chain()
     assert chain[0] == "deepseek-v4-flash-free"
     assert chain == [
