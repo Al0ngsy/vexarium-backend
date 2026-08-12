@@ -145,8 +145,8 @@ class QuoteStreamManager:
                 backoff = self._reconnect_base  # reset on healthy connect
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning("quote stream down; reconnect in %.0fs", backoff, exc_info=True)
+            except Exception as exc:
+                logger.warning("quote stream down (%s); reconnect in %.0fs", exc, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._reconnect_max)
 

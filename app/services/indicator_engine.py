@@ -17,6 +17,7 @@ New indicators can be registered without touching existing code::
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -35,6 +36,11 @@ except ImportError:  # pragma: no cover - fallback path
         ) from exc
 
 logger = logging.getLogger(__name__)
+
+# pandas-ta-remake assigns float arrays into int64 columns internally (e.g.
+# MFI's tdf), which pandas >= 2.3 flags as incompatible-dtype FutureWarning.
+# Values are correct; remove when the library fixes its dtypes.
+warnings.filterwarnings("ignore", message="Setting an item of incompatible dtype", category=FutureWarning)
 
 # ---------------------------------------------------------------------------
 # Types
