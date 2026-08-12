@@ -135,9 +135,11 @@ class AlpacaClient:
         mult, unit, tf_days, yahoo_interval = TIMEFRAMES[timeframe]
         if days > tf_days:
             days = tf_days  # cap at what the data source offers
-        # Intraday bars change every bar; the 6h daily TTL would freeze
-        # 1m/5m/… charts. Cache intraday for a minute instead.
-        ttl = 60 if unit in (TimeFrameUnit.Minute, TimeFrameUnit.Hour) else CACHE_TTL_BARS
+        # Cache for roughly one bar duration so intraday charts stay fresh
+        # without hammering Redis (1m→60s, 5m→5min, 15m→15min, …, 4h→4h);
+        # daily+ bars change once per period → 6h cap.
+        unit_seconds = {TimeFrameUnit.Minute: 60, TimeFrameUnit.Hour: 3600}.get(unit, 86400)
+        ttl = min(mult * unit_seconds, CACHE_TTL_BARS)
         key = bars_key(symbol, timeframe)
         cached = run_coro(cache_get(key))
         if cached is not None:
