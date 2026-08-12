@@ -16,7 +16,13 @@ def test_model_chain_primary_first_deduped():
     ):
         chain = _model_chain()
     assert chain[0] == "deepseek-v4-flash-free"
-    assert chain == ["deepseek-v4-flash-free", "big-pickle", "mimo-v2.5-free", "north-mini-code-free"]
+    assert chain == [
+        "deepseek-v4-flash-free",
+        "big-pickle",
+        "mimo-v2.5-free",
+        "north-mini-code-free",
+        "deepseek-v4-flash",
+    ]
 
 
 @pytest.mark.asyncio
