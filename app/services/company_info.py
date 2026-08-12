@@ -37,6 +37,13 @@ _HEADERS = {
 }
 _HTTP_TIMEOUT = 12.0
 
+# Wikipedia REST requires a descriptive UA per Wikimedia's User-Agent policy
+# (browser-like/generic UAs get 403 from cloud IPs). Deliberately NOT the
+# Chrome UA above.
+_WIKI_HEADERS = {
+    "User-Agent": "Vexarium/1.0 (stock analysis tool; https://vexarium.pages.dev)"
+}
+
 
 def _company_key(symbol: str) -> str:
     # v2: adds OTC-ADR -> main-listing resolution; bump on schema changes so
@@ -179,7 +186,7 @@ def _fetch_wikipedia_description(name: str, symbol: str = "") -> str:
     if not title:
         return ""
     url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
-    with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT) as client:
+    with httpx.Client(headers=_WIKI_HEADERS, timeout=_HTTP_TIMEOUT) as client:
         resp = client.get(url)
         resp.raise_for_status()
         data = resp.json()
