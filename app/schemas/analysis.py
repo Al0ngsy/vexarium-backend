@@ -16,7 +16,7 @@ class PricePoint(BaseModel):
     high: float
     low: float
     close: float
-    source: str = ""  # "alpaca" (IEX, real-time) | "yahoo" (~15 min delayed) | "" (unknown)
+    source: str = ""  # "alpaca" | "yahoo" — intraday bars are ~15 min delayed either way (Alpaca historical-data rule)
 
 class IndicatorResult(BaseModel):
     name: str

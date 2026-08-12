@@ -194,7 +194,10 @@ class AlpacaClient:
                     df = yahoo_df
                     df.attrs["source"] = "yahoo"  # Yahoo intraday is ~15 min delayed
             else:
-                df.attrs["source"] = "alpaca"  # Alpaca free tier = real-time IEX
+                # Alpaca bars come from IEX but the historical API excludes the
+                # last ~15 min (their historical-data rule) — quotes are the
+                # real-time part. The FE live-tick extends the last candle.
+                df.attrs["source"] = "alpaca"
             run_coro(cache_set(key, df.to_json(), ttl=ttl))
             return df
         except Exception as e:
