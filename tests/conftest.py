@@ -26,6 +26,11 @@ def _test_env():
     settings.stripe_secret_key = ""
     settings.stripe_price_id = ""
     settings.stripe_webhook_secret = ""
+    # Data-provider keys must not leak from a local .env into tests — a live
+    # Twelve Data/Finnhub key would make get_stock_bars/finnhub tests do real
+    # network calls. Tests patch keys explicitly when they exercise those paths.
+    settings.twelvedata_api_key = ""
+    settings.finnhub_api_key = ""
     yield
     settings.dev_force_pro = False
 

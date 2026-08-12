@@ -22,6 +22,7 @@ from ..services.chart_series import build_price_series, compute_series_for, indi
 from ..services.verdicts import aggregate
 from ..services.news_service import fetch_news
 from ..services.company_info import get_company_info
+from ..services.finnhub import get_finnhub_bundle
 from ..services.cache import cache_get, cache_set, analysis_key, CACHE_TTL_ANALYSIS
 from ..config import settings
 
@@ -128,6 +129,24 @@ async def analyze(request: Request, body: AnalysisRequest):
         raise
     except Exception:
         logger.error("Analysis failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal error")
+
+
+@router.get("/finnhub/{symbol}")
+@limiter.limit(f"{settings.rate_limit_free}/minute")
+async def finnhub_data(request: Request, symbol: str):
+    """Insider transactions, earnings history and peers (Finnhub, 12h cache).
+
+    Each list is empty when the FINNHUB_API_KEY is unset or the symbol has
+    no data — widgets degrade gracefully, no error.
+    """
+    try:
+        sym = validate_symbol(symbol)
+        return get_finnhub_bundle(sym)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.error("Finnhub bundle failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error")
 
 

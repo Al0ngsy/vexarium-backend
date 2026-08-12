@@ -143,6 +143,7 @@ CACHE_TTL_QUOTE = 5            # seconds during market hours
 CACHE_TTL_NEWS = 30 * 60       # 30 min
 CACHE_TTL_AI = 24 * 3600       # AI analysis per symbol per day
 CACHE_TTL_ANALYSIS = 24 * 3600 # computed analysis per symbol per day
+CACHE_TTL_FINNHUB = 12 * 3600  # insider filings / earnings / peers change slowly
 CACHE_TTL_OPTION_CHAIN = 15    # indicative/delayed options quotes; short TTL
 
 
@@ -156,6 +157,10 @@ def quote_key(symbol: str) -> str:
 
 def news_key(symbol: str) -> str:
     return f"news:{symbol}"
+
+
+def finnhub_key(symbol: str, kind: str) -> str:
+    return f"finnhub:{symbol.upper()}:{kind}"
 
 
 def option_chain_key(symbol: str) -> str:

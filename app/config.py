@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Empty key → intraday bars keep using Alpaca (15-min delayed) + Yahoo.
     twelvedata_api_key: str = ""
 
+    # --- Finnhub (free-tier enrichment: insider transactions, earnings, peers) ---
+    # Empty key → the enrichment widgets show no data.
+    finnhub_api_key: str = ""
+
     # --- CORS ---
     cors_origins: str = "http://localhost:5173"
 
