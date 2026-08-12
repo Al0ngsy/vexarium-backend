@@ -30,9 +30,10 @@ class Settings(BaseSettings):
         "big-pickle,mimo-v2.5-free,ling-3.0-tiny-free,laguna-s-2.1-free,"
         "longcat-2.0-free,north-mini-code-free,nemotron-3-ultra-free"
     )
-    # Paid terminal fallback, appended after the free chain in
-    # ai_analyzer._model_chain(). Empty string disables it (a rate-limited
-    # free tier then surfaces as "temporarily unavailable").
+    # Paid model, tried first in ai_analyzer._model_chain(); the free models
+    # below are the fallbacks when the paid endpoint fails. Empty string
+    # disables it (free tier then leads, rate limits surface as
+    # "temporarily unavailable").
     llm_paid_fallback: str = "deepseek-v4-flash"
 
     # --- Twelve Data (real-time intraday bars; free tier 8 req/min, 800/day) ---

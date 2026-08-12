@@ -8,20 +8,20 @@ from app.services import ai_analyzer
 from app.services.ai_analyzer import _model_chain, analyze
 
 
-def test_model_chain_primary_first_deduped():
+def test_model_chain_paid_first_deduped():
     with patch.object(ai_analyzer.settings, "llm_model", "deepseek-v4-flash-free"), patch.object(
         ai_analyzer.settings,
         "llm_fallback_models",
         "big-pickle,mimo-v2.5-free,deepseek-v4-flash-free,north-mini-code-free",
     ), patch.object(ai_analyzer.settings, "llm_paid_fallback", "deepseek-v4-flash"):
         chain = _model_chain()
-    assert chain[0] == "deepseek-v4-flash-free"
+    assert chain[0] == "deepseek-v4-flash"
     assert chain == [
+        "deepseek-v4-flash",
         "deepseek-v4-flash-free",
         "big-pickle",
         "mimo-v2.5-free",
         "north-mini-code-free",
-        "deepseek-v4-flash",
     ]
 
 

@@ -118,11 +118,11 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
 
 
 def _model_chain() -> list[str]:
-    """Primary LLM + free fallback models, deduped, in attempt order.
+    """Paid model first, then free models, deduped, in attempt order.
 
-    Always ends with the paid terminal fallback (`settings.llm_paid_fallback`)
-    so a rate-limited free tier still yields an answer instead of
-    "temporarily unavailable".
+    `settings.llm_paid_fallback` (default `deepseek-v4-flash`) leads so every
+    analysis gets the best model; a paid-endpoint failure falls through to the
+    free tier instead of surfacing "temporarily unavailable".
     """
     models = [settings.llm_model] + [
         m.strip() for m in settings.llm_fallback_models.split(",") if m.strip()
@@ -130,7 +130,7 @@ def _model_chain() -> list[str]:
     seen: set[str] = set()
     chain = [m for m in models if not (m in seen or seen.add(m))]
     if settings.llm_paid_fallback and settings.llm_paid_fallback not in chain:
-        chain.append(settings.llm_paid_fallback)
+        chain.insert(0, settings.llm_paid_fallback)
     return chain
 
 
