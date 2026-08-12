@@ -37,46 +37,56 @@ _YAHOO_HEADERS = {
 }
 _EMPTY_BARS_COLUMNS = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
 
-# Finnhub — real-time intraday bars (no 15-min historical delay). Free tier:
-# 60 calls/min account-wide; ONE call returns all bars for a symbol, so a
-# chart refresh costs 1 call and the bar-duration cache absorbs repeats.
-_FINNHUB_URL = "https://finnhub.io/api/v1/stock/candle"
-_FINNHUB_RES = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60"}  # 4h has no native res → Alpaca
+# Twelve Data — real-time intraday bars (no 15-min historical delay). Free
+# tier: 8 req/min, 800/day; ONE call returns up to 330 bars for a symbol, so
+# a chart refresh costs 1 request and the bar-duration cache absorbs repeats.
+_TD_URL = "https://api.twelvedata.com/time_series"
+_TD_RES = {
+    "1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min",
+    "1h": "1h", "4h": "4h",
+}
+_TD_OUTPUTSIZE = 330  # a bit over the FE's 300-bar window
 
 
-def _fetch_finnhub_bars(symbol: str, days: int, res: str) -> pd.DataFrame:
-    """Real-time intraday OHLCV bars from Finnhub (Unix bar-start timestamps).
+def _fetch_twelvedata_bars(symbol: str, res: str) -> pd.DataFrame:
+    """Real-time intraday OHLCV bars from Twelve Data (UTC timestamps).
 
-    Empty DataFrame on any failure (no key, non-200, no_data, bad shape) —
-    callers fall through to the Alpaca/Yahoo path.
+    Empty DataFrame on any failure (no key, non-ok status, empty values,
+    bad shape) — callers fall through to the Alpaca/Yahoo path.
     """
     cols = _EMPTY_BARS_COLUMNS
     try:
         resp = httpx.get(
-            _FINNHUB_URL,
+            _TD_URL,
             params={
                 "symbol": symbol.upper(),
-                "resolution": res,
-                "from": int(datetime.now().timestamp()) - days * 86400,
-                "to": int(datetime.now().timestamp()),
-                "token": settings.finnhub_api_key,
+                "interval": res,
+                "outputsize": _TD_OUTPUTSIZE,
+                "timezone": "UTC",
+                "apikey": settings.twelvedata_api_key,
             },
             timeout=10,
         )
         resp.raise_for_status()
         data = resp.json()
-        if data.get("s") != "ok" or not data.get("t"):
+        values = data.get("values") or []
+        if data.get("status") != "ok" or not values:
             return pd.DataFrame(columns=cols)
-        return pd.DataFrame({
-            "open": data["o"],
-            "high": data["h"],
-            "low": data["l"],
-            "close": data["c"],
-            "volume": data["v"],
-            "timestamp": pd.to_datetime(data["t"], unit="s", utc=True),
-        })
+        # values arrive NEWEST-first; reverse to ascending bar order.
+        rows = [
+            {
+                "open": float(v["open"]),
+                "high": float(v["high"]),
+                "low": float(v["low"]),
+                "close": float(v["close"]),
+                "volume": float(v.get("volume") or 0),
+                "timestamp": pd.to_datetime(v["datetime"], utc=True),
+            }
+            for v in reversed(values)
+        ]
+        return pd.DataFrame(rows)
     except Exception:
-        logger.debug("Finnhub bars failed for %s", symbol)
+        logger.debug("Twelve Data bars failed for %s", symbol)
         return pd.DataFrame(columns=cols)
 
 
@@ -191,13 +201,13 @@ class AlpacaClient:
                     return df
             except Exception:
                 pass
-        # Real-time intraday bars: Finnhub first (no 15-min historical delay,
-        # unlike Alpaca/Yahoo). Falls through to Alpaca/Yahoo below on any miss.
-        res = _FINNHUB_RES.get(timeframe)
-        if res and settings.finnhub_api_key:
-            df = _fetch_finnhub_bars(symbol, days, res)
+        # Real-time intraday bars: Twelve Data first (no 15-min historical
+        # delay, unlike Alpaca/Yahoo). Falls through to Alpaca/Yahoo on any miss.
+        res = _TD_RES.get(timeframe)
+        if res and settings.twelvedata_api_key:
+            df = _fetch_twelvedata_bars(symbol, res)
             if not df.empty:
-                df.attrs["source"] = "finnhub"
+                df.attrs["source"] = "twelvedata"
                 run_coro(cache_set(key, df.to_json(), ttl=ttl))
                 return df
         try:

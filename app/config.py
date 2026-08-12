@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     # free tier then surfaces as "temporarily unavailable").
     llm_paid_fallback: str = "deepseek-v4-flash"
 
-    # --- Finnhub (real-time intraday bars; free tier, 60 calls/min) ---
+    # --- Twelve Data (real-time intraday bars; free tier 8 req/min, 800/day) ---
     # Empty key → intraday bars keep using Alpaca (15-min delayed) + Yahoo.
-    finnhub_api_key: str = ""
+    twelvedata_api_key: str = ""
 
     # --- CORS ---
     cors_origins: str = "http://localhost:5173"

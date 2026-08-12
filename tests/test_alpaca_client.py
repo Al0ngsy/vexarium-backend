@@ -4,7 +4,7 @@ All SDK clients are mocked — no real API calls are made.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -460,49 +460,49 @@ class TestNews:
         assert result == [{"headline": "AAPL news", "source": "Reuters"}]
 
 
-class TestFinnhubBars:
-    """Finnhub serves real-time intraday bars; Alpaca/Yahoo are the fallback."""
+class TestTwelveDataBars:
+    """Twelve Data serves real-time intraday bars; Alpaca/Yahoo are the fallback."""
 
-    def _finnhub_payload(self):
-        ts = [int(datetime.now(timezone.utc).timestamp()) - i * 60 for i in range(3, 0, -1)]
+    def _td_payload(self):
+        base = datetime.now(timezone.utc)
+        dt = lambda i: (base - timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S")
         return {
-            "s": "ok",
-            "o": [100.0, 101.0, 102.0],
-            "h": [101.0, 102.0, 103.0],
-            "l": [99.0, 100.0, 101.0],
-            "c": [100.5, 101.5, 102.5],
-            "v": [1000, 1100, 1200],
-            "t": ts,
+            "status": "ok",
+            "values": [
+                {"datetime": dt(0), "open": "102.0", "high": "103.0", "low": "101.0", "close": "102.5", "volume": "1200"},
+                {"datetime": dt(1), "open": "101.0", "high": "102.0", "low": "100.0", "close": "101.5", "volume": "1100"},
+                {"datetime": dt(2), "open": "100.0", "high": "101.0", "low": "99.0", "close": "100.5", "volume": "1000"},
+            ],
         }
 
-    def test_intraday_bars_come_from_finnhub_when_key_set(self, client):
+    def test_intraday_bars_come_from_twelvedata_when_key_set(self, client):
         with (
-            patch.object(alpaca_client.settings, "finnhub_api_key", "test-key"),
+            patch.object(alpaca_client.settings, "twelvedata_api_key", "test-key"),
             patch(
                 "app.services.alpaca_client.httpx.get",
                 return_value=SimpleNamespace(
-                    raise_for_status=lambda: None, json=lambda: self._finnhub_payload()
+                    raise_for_status=lambda: None, json=lambda: self._td_payload()
                 ),
             ),
         ):
             df = client.get_stock_bars("AAPL", timeframe="5m")
 
-        assert df.attrs["source"] == "finnhub"
+        assert df.attrs["source"] == "twelvedata"
         assert len(df) == 3
         assert df.iloc[-1]["close"] == 102.5
         client._stock.get_stock_bars.assert_not_called()
 
-    def test_finnhub_no_data_falls_back_to_alpaca(self, client):
+    def test_twelvedata_error_falls_back_to_alpaca(self, client):
         ts = datetime.now(timezone.utc)
         bars = [make_bar(100.0, 101.0, 99.0, 100.5, 1000, ts)]
         client._stock.get_stock_bars.return_value = SimpleNamespace(data={"AAPL": bars})
 
         with (
-            patch.object(alpaca_client.settings, "finnhub_api_key", "test-key"),
+            patch.object(alpaca_client.settings, "twelvedata_api_key", "test-key"),
             patch(
                 "app.services.alpaca_client.httpx.get",
                 return_value=SimpleNamespace(
-                    raise_for_status=lambda: None, json=lambda: {"s": "no_data"}
+                    raise_for_status=lambda: None, json=lambda: {"status": "error"}
                 ),
             ),
             patch(
@@ -517,13 +517,13 @@ class TestFinnhubBars:
         assert len(df) == 1
         assert df.iloc[0]["close"] == 100.5
 
-    def test_finnhub_skipped_without_key(self, client):
+    def test_twelvedata_skipped_without_key(self, client):
         ts = datetime.now(timezone.utc)
         bars = [make_bar(100.0, 101.0, 99.0, 100.5, 1000, ts)]
         client._stock.get_stock_bars.return_value = SimpleNamespace(data={"AAPL": bars})
 
         with (
-            patch.object(alpaca_client.settings, "finnhub_api_key", ""),
+            patch.object(alpaca_client.settings, "twelvedata_api_key", ""),
             patch(
                 "app.services.alpaca_client._fetch_yahoo_bars",
                 return_value=pd.DataFrame(

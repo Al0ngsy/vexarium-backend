@@ -12,7 +12,7 @@ def build_price_series(df: pd.DataFrame, limit: int = 120) -> list[dict]:
     and the chart renders nothing.
     """
     out = []
-    source = df.attrs.get("source", "")  # "finnhub" | "alpaca" | "yahoo" | "" (cached/unknown)
+    source = df.attrs.get("source", "")  # "twelvedata" | "alpaca" | "yahoo" | "" (cached/unknown)
     for _, row in df.tail(limit).iterrows():
         ts = row.get("timestamp")
         t = ts.isoformat() if isinstance(ts, pd.Timestamp) else str(ts)
