@@ -21,7 +21,7 @@ async def stream_quotes(request: Request, symbols: str = ""):
     """Server-Sent Events feed of live trades/quotes for the given symbols.
 
     Query: ?symbols=AAPL,MSFT (comma-separated, max 20).
-    Each event: data: {"symbol":"AAPL","price":213.44,"size":100,"ts":"..."}
+    Each event: data: {"symbol":"AAPL","price":213.44,"size":100,"ts":"...","prev_close":211.9}
     Heartbeat comment every 20s keeps proxies from idling the connection out.
     """
     try:

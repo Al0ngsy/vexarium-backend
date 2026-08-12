@@ -22,6 +22,8 @@ from typing import Any
 import websockets
 
 from ..config import settings
+from .cache import cache_get, cache_set, prev_close_key
+from .alpaca_client import AlpacaClient
 
 logger = logging.getLogger("vexarium.services.quote_stream")
 
@@ -30,6 +32,7 @@ ALPACA_STREAM_URL = "wss://stream.data.alpaca.markets/v2/iex"
 MAX_SYMBOLS = 20
 QUEUE_MAX = 256
 HEARTBEAT_SECS = 20
+CACHE_TTL_PREV_CLOSE = 12 * 3600
 
 
 def validate_symbols(raw: str | None) -> list[str]:
@@ -53,10 +56,17 @@ class QuoteEvent:
     price: float
     size: float
     ts: str  # ISO8601
+    prev_close: float | None = None
 
     def as_sse(self) -> str:
         return json.dumps(
-            {"symbol": self.symbol, "price": self.price, "size": self.size, "ts": self.ts}
+            {
+                "symbol": self.symbol,
+                "price": self.price,
+                "size": self.size,
+                "ts": self.ts,
+                "prev_close": self.prev_close,
+            }
         )
 
 
@@ -107,17 +117,47 @@ class QuoteStreamManager:
         self._reconnect_base = reconnect_base
         self._reconnect_max = reconnect_max
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
+        self._prev_close: dict[str, float | None] = {}
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
     async def subscribe(self, symbols: list[str]) -> asyncio.Queue:
         """Register a subscriber for symbols; returns its event queue."""
         q: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAX)
+        fresh: list[str] = []
         async with self._lock:
             for s in symbols:
-                self._subscribers.setdefault(s, set()).add(q)
+                subs = self._subscribers.get(s)
+                if subs:
+                    subs.add(q)
+                else:
+                    self._subscribers[s] = {q}
+                    fresh.append(s)
             self._ensure_task()
+        for s in fresh:
+            await self._ensure_prev_close(s)
         return q
+
+    async def _ensure_prev_close(self, symbol: str) -> None:
+        """Resolve the previous trading day close for a symbol (Redis-cached)."""
+        if symbol in self._prev_close:
+            return
+        try:
+            cached = await cache_get(prev_close_key(symbol))
+            if cached is not None:
+                self._prev_close[symbol] = float(cached)
+                return
+        except Exception:
+            pass
+        try:
+            snap = await asyncio.to_thread(AlpacaClient().get_market_snapshot, symbol)
+            pc = snap.get("prev_close")
+            self._prev_close[symbol] = float(pc) if pc else None
+            if pc:
+                await cache_set(prev_close_key(symbol), float(pc), ttl=CACHE_TTL_PREV_CLOSE)
+        except Exception as exc:
+            logger.warning("prev_close unavailable for %s: %s", symbol, exc)
+            self._prev_close[symbol] = None
 
     async def unsubscribe(self, symbols: list[str], q: asyncio.Queue) -> None:
         """Drop a subscriber; if a symbol has no subscribers left it is unsubscribed upstream."""
@@ -186,6 +226,7 @@ class QuoteStreamManager:
         subs = self._subscribers.get(ev.symbol)
         if not subs:
             return
+        ev.prev_close = self._prev_close.get(ev.symbol)
         for q in list(subs):
             try:
                 q.put_nowait(ev)

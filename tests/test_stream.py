@@ -65,6 +65,7 @@ def test_sse_payload_is_json():
     # Whitespace-tolerant key/value check: strip spaces from the payload so
     # it matches whether as_sse uses default or compact json separators.
     assert '"symbol":"AAPL"' in ev.as_sse().replace(" ", "")
+    assert ev.as_sse().replace(" ", "").endswith('"prev_close":null}')
     import json
 
     assert json.loads(ev.as_sse())["price"] == 213.44

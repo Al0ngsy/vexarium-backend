@@ -155,6 +155,10 @@ def quote_key(symbol: str) -> str:
     return f"quote:{symbol}"
 
 
+def prev_close_key(symbol: str) -> str:
+    return f"prev_close:{symbol}"
+
+
 def news_key(symbol: str) -> str:
     return f"news:{symbol}"
 
