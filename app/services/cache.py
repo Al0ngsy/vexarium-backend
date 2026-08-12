@@ -189,3 +189,10 @@ def analysis_key(symbol: str, timeframe: str = "1d") -> str:
     so the computed result only changes once per day -> cache for the whole day."""
     from datetime import date
     return f"analysis:{symbol}:{timeframe}:{date.today().isoformat()}"
+
+
+def analysis_lock_key(symbol: str, timeframe: str = "1d") -> str:
+    """Single-flight lock so concurrent identical analysis POSTs (the page fires
+    up to 3 duplicate 1d requests on load) wait for the in-flight compute instead
+    of thundering a 1-CPU instance."""
+    return f"analysis_lock:{symbol}:{timeframe}"

@@ -23,7 +23,11 @@ from ..services.verdicts import aggregate
 from ..services.news_service import fetch_news
 from ..services.company_info import get_company_info
 from ..services.finnhub import get_finnhub_bundle
-from ..services.cache import cache_get, cache_set, analysis_key, CACHE_TTL_ANALYSIS
+from ..services.cache import (
+    cache_get, cache_set, analysis_key, analysis_lock_key, CACHE_TTL_ANALYSIS,
+    lock_acquire, lock_held, lock_release,
+)
+import asyncio
 from ..config import settings
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
@@ -113,16 +117,45 @@ async def analyze(request: Request, body: AnalysisRequest):
                 return AnalysisResponse.model_validate(cached)
             except Exception:
                 pass
-        client = AlpacaClient()
-        df = client.get_stock_bars(sym, timeframe=body.timeframe)
-        if df.empty:
-            raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
-        # All indicators are free (no more free/pro indicator split).
-        engine = create_pro_engine()
-        indicator_results = engine.compute_all(df)
-        response = _build_response(sym, body, df, indicator_results)
-        await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)
-        return response
+
+        # Single-flight: the page fires up to 3 duplicate 1d POSTs on load
+        # (main + quiet recompute + verdict strip). On a cold cache they all
+        # computed concurrently, stalling a 1-CPU instance for 15-20s+. One
+        # request computes; the duplicates wait and read the cached result.
+        lock_key = analysis_lock_key(sym, body.timeframe)
+        if not await lock_acquire(lock_key, ttl=180):
+            waited = 0
+            while waited < 120:
+                await asyncio.sleep(2)
+                waited += 2
+                cached = await cache_get(key)
+                if cached is not None:
+                    try:
+                        return AnalysisResponse.model_validate(cached)
+                    except Exception:
+                        pass
+                if not await lock_held(lock_key):
+                    break  # holder failed; take over below
+            if cached is None:
+                if not await lock_acquire(lock_key, ttl=180):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Analysis in progress, retry in a moment",
+                    )
+
+        try:
+            client = AlpacaClient()
+            df = client.get_stock_bars(sym, timeframe=body.timeframe)
+            if df.empty:
+                raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
+            # All indicators are free (no more free/pro indicator split).
+            engine = create_pro_engine()
+            indicator_results = engine.compute_all(df)
+            response = _build_response(sym, body, df, indicator_results)
+            await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)
+            return response
+        finally:
+            await lock_release(lock_key)
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))
     except HTTPException:
