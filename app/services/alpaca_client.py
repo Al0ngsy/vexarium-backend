@@ -37,6 +37,48 @@ _YAHOO_HEADERS = {
 }
 _EMPTY_BARS_COLUMNS = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
 
+# Finnhub — real-time intraday bars (no 15-min historical delay). Free tier:
+# 60 calls/min account-wide; ONE call returns all bars for a symbol, so a
+# chart refresh costs 1 call and the bar-duration cache absorbs repeats.
+_FINNHUB_URL = "https://finnhub.io/api/v1/stock/candle"
+_FINNHUB_RES = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60"}  # 4h has no native res → Alpaca
+
+
+def _fetch_finnhub_bars(symbol: str, days: int, res: str) -> pd.DataFrame:
+    """Real-time intraday OHLCV bars from Finnhub (Unix bar-start timestamps).
+
+    Empty DataFrame on any failure (no key, non-200, no_data, bad shape) —
+    callers fall through to the Alpaca/Yahoo path.
+    """
+    cols = _EMPTY_BARS_COLUMNS
+    try:
+        resp = httpx.get(
+            _FINNHUB_URL,
+            params={
+                "symbol": symbol.upper(),
+                "resolution": res,
+                "from": int(datetime.now().timestamp()) - days * 86400,
+                "to": int(datetime.now().timestamp()),
+                "token": settings.finnhub_api_key,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("s") != "ok" or not data.get("t"):
+            return pd.DataFrame(columns=cols)
+        return pd.DataFrame({
+            "open": data["o"],
+            "high": data["h"],
+            "low": data["l"],
+            "close": data["c"],
+            "volume": data["v"],
+            "timestamp": pd.to_datetime(data["t"], unit="s", utc=True),
+        })
+    except Exception:
+        logger.debug("Finnhub bars failed for %s", symbol)
+        return pd.DataFrame(columns=cols)
+
 
 TIMEFRAMES: dict[str, tuple[int, TimeFrameUnit, int, str]] = {
     # key -> (multiplier, unit, max days, yahoo interval)
@@ -149,6 +191,15 @@ class AlpacaClient:
                     return df
             except Exception:
                 pass
+        # Real-time intraday bars: Finnhub first (no 15-min historical delay,
+        # unlike Alpaca/Yahoo). Falls through to Alpaca/Yahoo below on any miss.
+        res = _FINNHUB_RES.get(timeframe)
+        if res and settings.finnhub_api_key:
+            df = _fetch_finnhub_bars(symbol, days, res)
+            if not df.empty:
+                df.attrs["source"] = "finnhub"
+                run_coro(cache_set(key, df.to_json(), ttl=ttl))
+                return df
         try:
             req = StockBarsRequest(
                 symbol_or_symbols=symbol,
