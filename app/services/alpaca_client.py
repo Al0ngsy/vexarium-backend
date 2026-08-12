@@ -135,6 +135,9 @@ class AlpacaClient:
         mult, unit, tf_days, yahoo_interval = TIMEFRAMES[timeframe]
         if days > tf_days:
             days = tf_days  # cap at what the data source offers
+        # Intraday bars change every bar; the 6h daily TTL would freeze
+        # 1m/5m/… charts. Cache intraday for a minute instead.
+        ttl = 60 if unit in (TimeFrameUnit.Minute, TimeFrameUnit.Hour) else CACHE_TTL_BARS
         key = bars_key(symbol, timeframe)
         cached = run_coro(cache_get(key))
         if cached is not None:
@@ -164,7 +167,8 @@ class AlpacaClient:
                 # Alpaca. Fall back to keyless Yahoo bars before giving up.
                 df = _fetch_yahoo_bars(symbol, days, interval=yahoo_interval)
                 if not df.empty:
-                    run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+                    df.attrs["source"] = "yahoo"  # Yahoo intraday is ~15 min delayed
+                    run_coro(cache_set(key, df.to_json(), ttl=ttl))
                     return df
                 return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
             rows = []
@@ -186,7 +190,10 @@ class AlpacaClient:
                 yahoo_df = _fetch_yahoo_bars(symbol, days, interval=yahoo_interval)
                 if len(yahoo_df) > len(df):
                     df = yahoo_df
-            run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+                    df.attrs["source"] = "yahoo"  # Yahoo intraday is ~15 min delayed
+            else:
+                df.attrs["source"] = "alpaca"  # Alpaca free tier = real-time IEX
+            run_coro(cache_set(key, df.to_json(), ttl=ttl))
             return df
         except Exception as e:
             logger.error("Alpaca get_stock_bars failed for %s: %s", symbol, e)
@@ -196,7 +203,8 @@ class AlpacaClient:
                 # OTC/ADR ticker. Try the Yahoo fallback before giving up.
                 df = _fetch_yahoo_bars(symbol, days)
                 if not df.empty:
-                    run_coro(cache_set(key, df.to_json(), ttl=CACHE_TTL_BARS))
+                    df.attrs["source"] = "yahoo"
+                    run_coro(cache_set(key, df.to_json(), ttl=ttl))
                     return df
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
             raise AlpacaError(f"Failed to fetch stock bars for {symbol}")

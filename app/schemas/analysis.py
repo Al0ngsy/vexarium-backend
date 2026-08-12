@@ -16,6 +16,7 @@ class PricePoint(BaseModel):
     high: float
     low: float
     close: float
+    source: str = ""  # "alpaca" (IEX, real-time) | "yahoo" (~15 min delayed) | "" (unknown)
 
 class IndicatorResult(BaseModel):
     name: str
