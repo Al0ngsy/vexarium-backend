@@ -16,6 +16,15 @@ def test_sentiment_neutral():
 def test_sentiment_empty():
     assert compute_sentiment("") == 0.0
 
+def test_sentiment_negation():
+    # VADER flips polarity on negation ("not good" <- 0). The old
+    # word-counter missed this entirely (neither "not" nor "good" matched).
+    assert compute_sentiment("markets not good today") < 0
+
+def test_sentiment_beyond_lexicon():
+    # Words the old wordlist missed ("warns", "hacked") now register.
+    assert compute_sentiment("US warns Siemens devices can be hacked") < 0
+
 def test_get_news_sentiment_with_articles():
     articles = [
         {"headline": "AAPL surges on record profit"},

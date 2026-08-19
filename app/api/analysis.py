@@ -20,9 +20,9 @@ from ..services.alpaca_client import AlpacaClient, AlpacaError
 from ..services.indicator_engine import create_pro_engine
 from ..services.chart_series import build_price_series, compute_series_for, indicator_kind
 from ..services.verdicts import aggregate
-from ..services.news_service import fetch_news
+from ..services.news_service import fetch_news, add_article_scores, get_news_sentiment
 from ..services.company_info import get_company_info
-from ..services.finnhub import get_finnhub_bundle
+from ..services.finnhub import get_finnhub_bundle, get_market_news
 from ..services.cache import (
     cache_get, cache_set, analysis_key, analysis_lock_key, CACHE_TTL_ANALYSIS,
     lock_acquire, lock_held, lock_release,
@@ -180,6 +180,26 @@ async def finnhub_data(request: Request, symbol: str):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.error("Finnhub bundle failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal error")
+
+
+@router.get("/market-news")
+@limiter.limit(f"{settings.rate_limit_free}/minute")
+async def market_news(request: Request, limit: int = 6):
+    """Broad market headlines (Finnhub general news) with per-article scores.
+
+    Independent of any symbol; the news widget shows these next to the
+    stock-specific feed. Same sentiment scoring as the stock news.
+    """
+    try:
+        articles = get_market_news(limit=max(1, min(limit, 20)))
+        scored = add_article_scores(articles)
+        return {
+            "sentiment": get_news_sentiment(scored),
+            "articles": [NewsArticle.from_article(a) for a in scored],
+        }
+    except Exception:
+        logger.error("Market news failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error")
 
 

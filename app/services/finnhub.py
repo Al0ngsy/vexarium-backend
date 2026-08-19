@@ -8,6 +8,7 @@ earnings change slowly; peers rarely).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 import httpx
 
@@ -106,3 +107,34 @@ def get_finnhub_bundle(symbol: str) -> dict:
         "earnings": get_earnings_history(symbol),
         "peers": get_peers(symbol),
     }
+
+
+def _norm_market(n: dict) -> dict:
+    """Normalize a Finnhub general-news item to the shared article shape."""
+    ts = n.get("datetime")
+    created = (
+        datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        if isinstance(ts, (int, float)) and ts
+        else ""
+    )
+    return {
+        "id": str(n.get("id")) if n.get("id") is not None else None,
+        "headline": n.get("headline", ""),
+        "source": n.get("source", ""),
+        "url": n.get("url", ""),
+        "summary": (n.get("summary") or "")[:400],
+        "created_at": created,
+        "symbols": [s.strip() for s in (n.get("related") or "").split(",") if s.strip()][:5],
+    }
+
+
+def get_market_news(limit: int = 6) -> list[dict]:
+    """Broad market headlines (Finnhub `news?category=general`), cached 12h
+    under a global key (not symbol-scoped). Empty on no key / any failure."""
+    def fetch():
+        data = _get("news", {"category": "general"})
+        if not isinstance(data, list):
+            return []
+        return [_norm_market(n) for n in data[:limit] if isinstance(n, dict)]
+
+    return _cached("GLOBAL", "market-news", fetch)

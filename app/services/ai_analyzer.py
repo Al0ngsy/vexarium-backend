@@ -111,6 +111,7 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
                 "source": a.get("source", ""),
                 "url": a.get("url", ""),
                 "summary": (a.get("summary") or "")[:400],
+                "sentiment": a.get("sentiment"),
             }
             for a in news_articles[:8]
         ]

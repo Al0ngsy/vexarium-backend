@@ -47,6 +47,7 @@ class NewsArticle(BaseModel):
     created_at: Optional[str] = None
     author: Optional[str] = None
     symbols: list[str] = []
+    sentiment: Optional[float] = None  # per-article headline sentiment score
 
     @classmethod
     def from_article(cls, a: dict) -> "NewsArticle":
@@ -62,6 +63,7 @@ class NewsArticle(BaseModel):
             created_at=created,
             author=a.get("author") or "",
             symbols=a.get("symbols") or [],
+            sentiment=a.get("sentiment"),
         )
 
 
