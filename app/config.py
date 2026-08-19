@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # --- LLM (OpenCode Go — OpenAI-compatible endpoint, subscription) ---
     llm_base_url: str = "https://opencode.ai/zen/go/v1"
     llm_api_key: str = ""
-    llm_model: str = "muse-spark-1.2-contributor"
+    llm_model: str = "mimo-v2.5"
 
     # --- Twelve Data (real-time intraday bars; free tier 8 req/min, 800/day) ---
     # Empty key → intraday bars keep using Alpaca (15-min delayed) + Yahoo.
