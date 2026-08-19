@@ -117,53 +117,33 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
     return f"{SYSTEM_PROMPT}\n\nContext:\n{json.dumps(context, indent=2)}\n\nProvide your analysis:"
 
 
-def _model_chain() -> list[str]:
-    """Paid model first, then free models, deduped, in attempt order.
-
-    `settings.llm_paid_fallback` (default `deepseek-v4-flash`) leads so every
-    analysis gets the best model; a paid-endpoint failure falls through to the
-    free tier instead of surfacing "temporarily unavailable".
-    """
-    models = [settings.llm_model] + [
-        m.strip() for m in settings.llm_fallback_models.split(",") if m.strip()
-    ]
-    seen: set[str] = set()
-    chain = [m for m in models if not (m in seen or seen.add(m))]
-    if settings.llm_paid_fallback and settings.llm_paid_fallback not in chain:
-        chain.insert(0, settings.llm_paid_fallback)
-    return chain
-
-
 async def analyze(prompt: str, skip_ai: bool = False) -> str:
     if skip_ai or not settings.llm_api_key:
         return "AI analysis unavailable. Review the technical indicators manually or come back later."
-    # Try each model in the chain (primary first). A rate limit, outage, or
-    # empty completion on one model falls through to the next free one.
-    for model in _model_chain():
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(
-                    f"{settings.llm_base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        # Generous budget: this model spends tokens on internal
-                        # reasoning BEFORE producing content. Too small a budget
-                        # (e.g. 300) yields empty content -> "temporarily unavailable".
-                        # 2000 was cutting deep analyses mid-sentence; 8192 lets
-                        # the full briefing through (prompt has no word cap now).
-                        "max_tokens": 8192,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"]
-                if content and content.strip():
-                    return content
-                # empty completion -> try next model
-        except Exception:
-            continue
+    # Single model from the OpenCode Go subscription; a rate limit or outage
+    # surfaces as "temporarily unavailable" (no free-tier fallbacks anymore).
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{settings.llm_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                json={
+                    "model": settings.llm_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    # Generous budget: this model spends tokens on internal
+                    # reasoning BEFORE producing content. Too small a budget
+                    # (e.g. 300) yields empty content. 2000 was cutting deep
+                    # analyses mid-sentence; 8192 lets the full briefing through.
+                    "max_tokens": 8192,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            if content and content.strip():
+                return content
+    except Exception:
+        pass
     return "AI analysis temporarily unavailable. Review the technical indicators manually or come back later."
 
 
@@ -177,49 +157,47 @@ async def analyze_stream(prompt: str, skip_ai: bool = False):
     """
     if skip_ai or not settings.llm_api_key:
         return
-    # Try each model in the chain; fall through on request-time failures
-    # (rate limit, outage). Mid-stream errors still propagate — a partial
-    # answer must not be silently swapped for another model's continuation
-    # (the INTC bug: a truncated briefing was cached for 24h).
-    for model in _model_chain():
-        started = False
-        try:
-            async with httpx.AsyncClient(timeout=180) as client:
-                async with client.stream(
-                    "POST",
-                    f"{settings.llm_base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": True,
-                        "max_tokens": 8192,
-                    },
-                ) as resp:
-                    resp.raise_for_status()
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        payload = line[6:].strip()
-                        if payload == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(payload)
-                        except Exception:
-                            continue
-                        choices = chunk.get("choices") or []
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta") or {}
-                        content = delta.get("content")
-                        # Skip reasoning_content (the model's hidden thinking) —
-                        # only stream the actual answer.
-                        if content:
-                            started = True
-                            yield content
-            return
-        except Exception:
-            if started:
-                raise
-            continue
-    # All models failed at request time — caller renders the unavailable message.
+    # Mid-stream errors propagate — a partial answer must not be silently
+    # dropped or swapped for another model's continuation (the INTC bug: a
+    # truncated briefing was cached for 24h).
+    started = False
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            async with client.stream(
+                "POST",
+                f"{settings.llm_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                json={
+                    "model": settings.llm_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": True,
+                    "max_tokens": 8192,
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except Exception:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    # Skip reasoning_content (the model's hidden thinking) —
+                    # only stream the actual answer.
+                    if content:
+                        started = True
+                        yield content
+        return
+    except Exception:
+        if started:
+            raise
+    # Request-time failure (rate limit, outage) — caller renders the
+    # unavailable message.

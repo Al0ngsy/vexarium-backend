@@ -20,21 +20,10 @@ class Settings(BaseSettings):
     alpaca_secret_key: str = ""
     alpaca_paper: bool = True
 
-    # --- LLM (OpenCode Zen — OpenAI-compatible endpoint, free tier) ---
-    llm_base_url: str = "https://opencode.ai/zen/v1"
+    # --- LLM (OpenCode Go — OpenAI-compatible endpoint, subscription) ---
+    llm_base_url: str = "https://opencode.ai/zen/go/v1"
     llm_api_key: str = ""
-    llm_model: str = "deepseek-v4-flash-free"
-    # Comma-separated free fallback models, tried in order when the primary
-    # fails (rate limit, outage). All are OpenCode Zen free-tier IDs.
-    llm_fallback_models: str = (
-        "big-pickle,mimo-v2.5-free,ling-3.0-tiny-free,laguna-s-2.1-free,"
-        "longcat-2.0-free,north-mini-code-free,nemotron-3-ultra-free"
-    )
-    # Paid model, tried first in ai_analyzer._model_chain(); the free models
-    # below are the fallbacks when the paid endpoint fails. Empty string
-    # disables it (free tier then leads, rate limits surface as
-    # "temporarily unavailable").
-    llm_paid_fallback: str = "deepseek-v4-flash"
+    llm_model: str = "muse-spark-1.2-contributor"
 
     # --- Twelve Data (real-time intraday bars; free tier 8 req/min, 800/day) ---
     # Empty key → intraday bars keep using Alpaca (15-min delayed) + Yahoo.
