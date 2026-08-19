@@ -88,6 +88,34 @@ def test_dedupe_empty():
     assert dedupe_articles([]) == []
 
 
+def test_cap_source_limits_any_single_outlet():
+    from app.services.news_service import cap_source
+
+    def art(h: str, u: str, src: str) -> dict:
+        return {"headline": h, "url": u, "created_at": "2026-08-19T10:00:00+00:00", "source": src}
+
+    arts = [art(f"Benzinga story {i}", f"http://bz/{i}", "Benzinga") for i in range(5)]
+    arts += [art("ChartMill note", "http://cm/1", "ChartMill"), art("Reuters wire", "http://re/1", "Reuters")]
+    capped = cap_source(arts, max_per_source=2)
+    assert len(capped) == 4  # 2× benzinga + chartmill + reuters
+    assert sum(1 for a in capped if a["source"] == "Benzinga") == 2
+
+
+def test_cap_source_groups_case_insensitively():
+    from app.services.news_service import cap_source
+
+    def art(h: str, u: str, src: str) -> dict:
+        return {"headline": h, "url": u, "created_at": "2026-08-19T10:00:00+00:00", "source": src}
+
+    arts = [
+        art("benzinga a", "http://a", "benzinga"),
+        art("Benzinga B", "http://b", "Benzinga"),
+        art("benzinga c", "http://c", "benzinga"),
+        art("Other d", "http://d", "Other"),
+    ]
+    assert len(cap_source(arts, max_per_source=2)) == 3  # 2 combined benzinga + 1 other
+
+
 # --- Fear & Greed ----------------------------------------------------------
 
 def test_fear_greed_rating_bands():

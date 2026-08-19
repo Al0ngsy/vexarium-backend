@@ -83,6 +83,7 @@ def fetch_news(client, symbol: str, limit: int = 10) -> tuple[dict, list]:
         except Exception:
             pass  # extra source optional; base feed still works
         articles = sorted(dedupe_articles(articles), key=_ts, reverse=True)
+        articles = cap_source(articles)
         return get_news_sentiment(articles), add_article_scores(articles)
     except Exception:
         return (
@@ -136,6 +137,27 @@ def dedupe_articles(articles: list, similar_ratio: float = 0.85) -> list:
                 break
         if not dup:
             out.append(a)
+    return out
+
+
+def cap_source(articles: list, max_per_source: int = 2) -> list:
+    """Bound how much one outlet can dominate the visible feed.
+
+    Keeps recency order but caps consecutive-homegrow dominance: no source
+    appears more than `max_per_source` times. Benzinga posts constantly and
+    would otherwise fill every slot; this forces the top-N to span outlets.
+    """
+    counts: dict = {}
+    out: list = []
+    for a in articles:
+        if not isinstance(a, dict):
+            out.append(a)
+            continue
+        s = (a.get("source") or "Other").lower()
+        if counts.get(s, 0) >= max_per_source:
+            continue
+        counts[s] = counts.get(s, 0) + 1
+        out.append(a)
     return out
 
 
