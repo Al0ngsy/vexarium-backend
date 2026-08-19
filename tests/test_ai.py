@@ -142,6 +142,27 @@ def test_fear_greed_parse_rejects_bad_payloads():
     assert parse({"fear_and_greed": {}}) is None
     assert parse({"fear_and_greed": {"score": "NaN"}}) is None
 
+
+def test_fear_greed_parse_history():
+    hist = {"data": [
+        {"x": 1755561600000.0, "y": 59.88, "rating": "greed"},
+        {"x": 1755648000000.0, "y": 55.914, "rating": "greed"},
+    ]}
+    d = parse({"fear_and_greed": {"score": 56.3}, "fear_and_greed_historical": hist})
+    assert d is not None
+    assert [p["v"] for p in d["history"]] == [59.9, 55.9]
+    assert all(p["t"].startswith("20") for p in d["history"])
+
+
+def test_fear_greed_parse_history_capped_at_90():
+    from datetime import datetime as dt, timezone as tz
+
+    base = dt(2026, 1, 1, tzinfo=tz.utc).timestamp() * 1000
+    hist = {"data": [{"x": base + i * 86_400_000, "y": 50.0} for i in range(120)]}
+    d = parse({"fear_and_greed": {"score": 50.0}, "fear_and_greed_historical": hist})
+    assert d is not None
+    assert len(d["history"]) == 90
+
 def test_build_prompt_contains_indicators():
     indicators = [
         {"name": "RSI", "verdict": "strong_buy", "value": 28.5},

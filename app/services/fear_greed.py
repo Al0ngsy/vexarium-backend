@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+from datetime import datetime, timezone
 
 import httpx
 
@@ -54,6 +55,24 @@ def parse(data: dict) -> dict | None:
     if not math.isfinite(score):
         return None
     score = round(score, 1)
+
+    # Recent daily history (last ~90 points) for the widget sparkline.
+    hist = data.get("fear_and_greed_historical") or {}
+    series: list = []
+    for p in (hist.get("data") or [])[-90:]:
+        x = p.get("x")
+        y = p.get("y")
+        if y is None:
+            continue
+        try:
+            v = float(y)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(v):
+            continue
+        iso = datetime.fromtimestamp(x / 1000, tz=timezone.utc).date().isoformat() if x else ""
+        series.append({"t": iso, "v": round(v, 1)})
+
     return {
         "score": score,
         "rating": rating(score),
@@ -61,6 +80,7 @@ def parse(data: dict) -> dict | None:
         "previous_close": fg.get("previous_close"),
         "previous_1_week": fg.get("previous_1_week"),
         "previous_1_month": fg.get("previous_1_month"),
+        "history": series,
     }
 
 
