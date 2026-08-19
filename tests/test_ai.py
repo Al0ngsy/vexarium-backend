@@ -1,7 +1,8 @@
 import pytest
 import json
 from unittest.mock import AsyncMock, patch
-from app.services.news_service import compute_sentiment, get_news_sentiment
+from app.services.news_service import compute_sentiment, get_news_sentiment, dedupe_articles
+from app.services.fear_greed import rating, parse
 from app.services.ai_analyzer import build_prompt, analyze
 
 def test_sentiment_positive():
@@ -39,6 +40,79 @@ def test_get_news_sentiment_empty():
     result = get_news_sentiment([])
     assert result["sentiment_score"] == 0.0
     assert result["article_count"] == 0
+
+
+# --- per-article dedupe ----------------------------------------------------
+
+def _art(headline: str, url: str, date: str) -> dict:
+    return {"headline": headline, "url": url, "created_at": f"{date}T10:00:00+00:00"}
+
+
+def test_dedupe_exact_headline():
+    assert len(dedupe_articles([
+        _art("Apple beats expectations", "http://a/1", "2026-08-19"),
+        _art("Apple beats expectations", "http://b/2", "2026-08-19"),
+    ])) == 1
+
+
+def test_dedupe_handles_datetime_created_at():
+    # Alpaca returns created_at as a datetime object, not a string.
+    from datetime import datetime, timezone
+
+    a = {"headline": "Apple beats expectations", "url": "http://a/1",
+         "created_at": datetime(2026, 8, 19, 10, 0, tzinfo=timezone.utc)}
+    b = _art("Apple beats expectations", "http://b/2", "2026-08-19")
+    assert len(dedupe_articles([a, b])) == 1
+
+
+def test_dedupe_same_url_case_insensitive():
+    assert len(dedupe_articles([
+        _art("Headline A", "http://X/1", "2026-08-19"),
+        _art("Headline B", "http://x/1", "2026-08-19"),
+    ])) == 1
+
+
+def test_dedupe_similar_same_day_dropped():
+    a = _art("Apple stock jumps on strong earnings beat", "http://a", "2026-08-19")
+    b = _art("Apple stock jumps on strong earnings beat again", "http://b", "2026-08-19")
+    assert len(dedupe_articles([a, b])) == 1
+
+
+def test_dedupe_similar_different_day_survives():
+    a = _art("Apple stock jumps on strong earnings beat", "http://a", "2026-08-19")
+    b = _art("Apple stock jumps on strong earnings beat again", "http://b", "2026-08-20")
+    assert len(dedupe_articles([a, b])) == 2
+
+
+def test_dedupe_empty():
+    assert dedupe_articles([]) == []
+
+
+# --- Fear & Greed ----------------------------------------------------------
+
+def test_fear_greed_rating_bands():
+    assert rating(10) == "extreme fear"
+    assert rating(30) == "fear"
+    assert rating(50) == "neutral"
+    assert rating(60) == "greed"
+    assert rating(90) == "extreme greed"
+
+
+def test_fear_greed_parse_snapshot():
+    d = parse({"fear_and_greed": {
+        "score": 56.3142, "timestamp": "2026-08-19T20:07:20+00:00",
+        "previous_close": 54.4, "previous_1_week": 62.9, "previous_1_month": 37.2,
+    }})
+    assert d is not None
+    assert d["score"] == 56.3
+    assert d["rating"] == "greed"
+    assert d["previous_1_week"] == 62.9
+
+
+def test_fear_greed_parse_rejects_bad_payloads():
+    assert parse({}) is None
+    assert parse({"fear_and_greed": {}}) is None
+    assert parse({"fear_and_greed": {"score": "NaN"}}) is None
 
 def test_build_prompt_contains_indicators():
     indicators = [

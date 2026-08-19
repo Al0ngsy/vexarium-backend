@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from datetime import datetime, timezone
 import logging
 
+from starlette.concurrency import run_in_threadpool
+
 from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
 from ..schemas.analysis import (
@@ -23,6 +25,7 @@ from ..services.verdicts import aggregate
 from ..services.news_service import fetch_news, add_article_scores, get_news_sentiment
 from ..services.company_info import get_company_info
 from ..services.finnhub import get_finnhub_bundle, get_market_news
+from ..services.fear_greed import get_fear_greed
 from ..services.cache import (
     cache_get, cache_set, analysis_key, analysis_lock_key, CACHE_TTL_ANALYSIS,
     lock_acquire, lock_held, lock_release,
@@ -201,6 +204,18 @@ async def market_news(request: Request, limit: int = 6):
     except Exception:
         logger.error("Market news failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error")
+
+
+@router.get("/fear-greed")
+@limiter.limit(f"{settings.rate_limit_free}/minute")
+async def fear_greed(request: Request):
+    """CNN Fear & Greed index (market-wide mood), ~30 min cache.
+
+    Loaded independently of /analysis — it's a fast, symbol-independent
+    gauge. {} when the source is unreachable (widget shows unavailable).
+    """
+    data = await run_in_threadpool(get_fear_greed)
+    return data or {}
 
 
 @router.get("/bars/{symbol}", response_model=list[PricePoint])

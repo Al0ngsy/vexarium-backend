@@ -8,7 +8,7 @@ earnings change slowly; peers rarely).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -138,3 +138,23 @@ def get_market_news(limit: int = 6) -> list[dict]:
         return [_norm_market(n) for n in data[:limit] if isinstance(n, dict)]
 
     return _cached("GLOBAL", "market-news", fetch)
+
+
+def get_company_news(symbol: str, limit: int = 8) -> list[dict]:
+    """Symbol-scoped news (Finnhub `/company-news`), cached 12h per symbol.
+
+    Second source for the stock feed (Alpaca + Google News is the first) so
+    the widget isn't a single outlet. Same normalized shape as market news.
+    """
+    def fetch():
+        to = datetime.now(timezone.utc).date()
+        frm = to - timedelta(days=7)
+        data = _get(
+            "company-news",
+            {"symbol": symbol.upper(), "from": frm.isoformat(), "to": to.isoformat()},
+        )
+        if not isinstance(data, list):
+            return []
+        return [_norm_market(n) for n in data[: limit * 2] if isinstance(n, dict)]
+
+    return _cached(symbol, "company-news", fetch)
