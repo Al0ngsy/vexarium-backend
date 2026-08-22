@@ -321,12 +321,12 @@ async def get_option_chance(
     symbol: str,
     contract_symbol: str = Query(...),
     token: str = "",
-    user_tier: str = Depends(require_tier("pro")),
+    # DEV: Pro gate removed during development, re-add `user_tier: str = Depends(require_tier("pro"))` before launch.
 ):
     """Estimate probability of profit / ending ITM for a long contract.
 
-    **Pro-only feature** (like AI analysis). Uses a Black-Scholes normal model
-    with the contract's implied volatility. All values are estimates.
+    Uses a Black-Scholes normal model with the contract's implied volatility.
+    All values are estimates.
     """
     try:
         sym = validate_symbol(symbol)

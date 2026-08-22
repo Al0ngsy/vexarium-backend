@@ -254,8 +254,9 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
     """
     sym = validate_symbol(body.symbol)
     strike = body.strike or 0.0
-    if user_tier != "pro":
-        raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access options AI.")
+    # DEV: Pro gate removed during development; re-add before launch:
+    #   if user_tier != "pro":
+    #       raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access options AI.")
     try:
         client = AlpacaClient()
         from ..services.strategy_engine import recommend_strategies

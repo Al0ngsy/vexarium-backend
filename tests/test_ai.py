@@ -476,14 +476,26 @@ async def test_ai_endpoint_any_symbol_free():
 
 
 @pytest.mark.asyncio
-async def test_options_strategies_ai_pro_only():
-    """Options-strategies AI is Pro-only: a free user gets 403."""
+async def test_options_strategies_ai_free_user_allowed():
+    """DEV: the Pro gate is removed during development, so a free user gets
+    the options-strategies AI. Re-add the 403 assertion before launch."""
+    from unittest.mock import patch, AsyncMock
     from httpx import ASGITransport, AsyncClient
     from app.main import app
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/v1/analysis/options-strategies", json={"symbol": "AAPL", "strike": 300})
-        assert resp.status_code == 403
+
+    df = _make_df()
+    with patch("app.api.ai.AlpacaClient") as MockClient, patch(
+        "app.api.ai.llm_analyze", new=AsyncMock(return_value="Consider a bull call spread. Not financial advice.")
+    ):
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_option_chain.return_value = []
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/analysis/options-strategies", json={"symbol": "AAPL", "strike": 300})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "analysis" in data and "strategies" in data
 
 
 @pytest.mark.asyncio
