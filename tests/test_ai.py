@@ -746,7 +746,7 @@ async def test_options_strategies_ai_pro_user():
     ):
         mock_instance = MockClient.return_value
         mock_instance.get_stock_bars.return_value = df
-        mock_instance.get_option_contracts.return_value = []
+        mock_instance.get_option_chain.return_value = []
         store = get_user_store()
         user = await store.create("optspro@test.dev", hash_password("secret123"), tier="pro")
         token = create_access_token(user["id"], tier="pro")

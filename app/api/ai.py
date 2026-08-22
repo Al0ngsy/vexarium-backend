@@ -262,7 +262,7 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
         from datetime import date, timedelta
         gte = date.today().isoformat()
         lte = (date.today() + timedelta(days=60)).isoformat()
-        contracts = client.get_option_contracts(sym, gte, lte)
+        contracts = client.get_option_chain(sym, expiration_gte=gte, expiration_lte=lte)
         chain = []
         for c in contracts:
             raw_type = str(c.get('type', 'call'))
@@ -271,10 +271,14 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
             raw_type = raw_type.lower()
             if raw_type not in ('call', 'put'):
                 continue
+            bid = float(c.get('bid', 0) or 0)
+            ask = float(c.get('ask', 0) or 0)
+            last = float(c.get('last_price', 0) or 0)
+            mid = ((bid + ask) / 2) if (bid and ask) else (last or bid or ask)
             chain.append({
                 'strike_price': float(c.get('strike_price', 0)),
                 'type': raw_type,
-                'last_price': float(c.get('last_price', 0) or 0),
+                'last_price': mid,
             })
         df = client.get_stock_bars(sym)
         indicator_results = []
