@@ -49,3 +49,47 @@ def test_recommend_indicators_neutral_falls_back_to_sentiment():
 def test_unknown_strategy_raises():
     with pytest.raises(ValueError):
         compute_strategy('bad_strategy', 100, 5, 105)
+
+def test_recommend_bearish_long_put():
+    chain = [
+        {'strike_price': 100, 'type': 'call', 'last_price': 5.0},
+        {'strike_price': 100, 'type': 'put', 'last_price': 4.0},
+    ]
+    recs = recommend_strategies('bearish', 100, chain)
+    names = [r['name'] for r in recs]
+    assert 'LONG PUT' in names
+    assert 'SHORT PUT' not in names
+    lp = next(r for r in recs if r['name'] == 'LONG PUT')
+    assert lp['is_bullish'] is False
+    assert lp['max_loss'] == 4.0
+    assert lp['breakeven'] == 96.0
+
+def test_long_put_metrics():
+    s = compute_strategy('long_put', 100, 5, 105)
+    assert s['max_profit'] is None
+    assert s['max_loss'] == 5
+    assert s['breakeven'] == 95
+    assert s['is_bullish'] is False
+
+def test_strike_centering_picks_nearest_not_first():
+    chain = [
+        {'strike_price': 90, 'type': 'call', 'last_price': 10.0},
+        {'strike_price': 100, 'type': 'call', 'last_price': 5.0},
+        {'strike_price': 110, 'type': 'call', 'last_price': 2.0},
+    ]
+    recs = recommend_strategies('bullish', 108, chain)
+    assert recs[0]['name'] == 'LONG CALL'
+    assert '110C' in recs[0]['subtitle']  # nearest to 108, not the first (90)
+
+def test_bull_call_spread_debit_is_mid_difference():
+    chain = [
+        {'strike_price': 95, 'type': 'call', 'last_price': 8.0},
+        {'strike_price': 100, 'type': 'call', 'last_price': 5.0},
+        {'strike_price': 106, 'type': 'call', 'last_price': 3.0},
+    ]
+    ind = [{'name': 'ATR(14)', 'verdict': 'hold'}]
+    recs = recommend_strategies('bullish', 100, chain, indicator_results=ind)
+    spread = next(r for r in recs if r['name'] == 'BULL CALL SPREAD')
+    # debit = mid(95C) - mid(100C) = 3.0, NOT the first leg's full 8.0.
+    assert spread['max_loss'] == 3.0
+    assert spread['breakeven'] == 98.0

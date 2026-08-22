@@ -3,11 +3,23 @@ from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
 from ..schemas.strategy import StrategiesResponse, StrategyCard, PayoffPoint
 from ..services.alpaca_client import AlpacaClient, AlpacaError
+from ..services.cache import cache_get, cache_set, run_coro, strategies_key, CACHE_TTL_OPTION_CHAIN
 from ..services.indicator_engine import create_pro_engine
-from ..services.strategy_engine import recommend_strategies, compute_strategy
+from ..services.strategy_engine import recommend_strategies
 from ..config import settings
 
 router = APIRouter(prefix="/options", tags=["strategies"])
+
+
+def _card_dict(r: dict) -> dict:
+    """Serializable StrategyCard payload (cache-safe, pre-pydantic)."""
+    return {
+        'name': r['name'], 'subtitle': r['subtitle'], 'is_bullish': r['is_bullish'],
+        'max_profit': r['max_profit'], 'max_loss': r['max_loss'],
+        'breakeven': r['breakeven'], 'return_on_risk': r['return_on_risk'],
+        'payoff_curve': r.get('payoff_curve', []) or [],
+    }
+
 
 @router.get("/{symbol}/strategies", response_model=StrategiesResponse)
 @limiter.limit(f"{settings.rate_limit_free}/minute")
@@ -15,37 +27,58 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
     try:
         sym = validate_symbol(symbol)
         client = AlpacaClient()
-        contracts = client.get_option_contracts(sym, expiration_gte, expiration_lte)
-        chain = []
-        for c in contracts:
-            # Normalize the type enum/string to a lowercase 'call'/'put'.
-            raw_type = c.get('type', 'call')
-            t = str(raw_type)
-            if '.' in t:
-                t = t.rsplit('.', 1)[-1]
-            t = t.lower()
-            if t not in ('call', 'put'):
-                continue
-            chain.append({
-                'strike_price': float(c.get('strike_price', 0)),
-                'type': t,
-                'last_price': float(c.get('last_price', 0) or 0),
-            })
-        # Compute the technical indicators and use them to drive strategy selection.
-        df = client.get_stock_bars(sym)
-        indicator_results = []
-        if not df.empty:
-            indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
-        recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
-        cards = []
-        for r in recs:
-            curve = r.get('payoff_curve', []) or []
-            cards.append(StrategyCard(
-                name=r['name'], subtitle=r['subtitle'], is_bullish=r['is_bullish'],
-                max_profit=r['max_profit'], max_loss=r['max_loss'], breakeven=r['breakeven'],
-                return_on_risk=r['return_on_risk'],
-                payoff_curve=[PayoffPoint(**p) for p in curve]
-            ))
-        return StrategiesResponse(symbol=sym, sentiment=sentiment, strategies=cards)
+        key = strategies_key(sym, strike, expiration_gte, expiration_lte)
+        payload = run_coro(cache_get(key))
+        if payload is None:
+            # Market-data chain (bid/ask/last/IV/greeks), already cached 15 min
+            # server-side — trading metadata has no reliable last_price.
+            contracts = client.get_option_chain(
+                underlying=sym,
+                expiration_gte=expiration_gte,
+                expiration_lte=expiration_lte,
+            )
+            chain = []
+            for c in contracts:
+                # Normalize the type enum/string to a lowercase 'call'/'put'.
+                raw_type = str(c.get('type', 'call'))
+                if '.' in raw_type:
+                    raw_type = raw_type.rsplit('.', 1)[-1]
+                t = raw_type.lower()
+                if t not in ('call', 'put'):
+                    continue
+                bid = float(c.get('bid', 0) or 0)
+                ask = float(c.get('ask', 0) or 0)
+                last = float(c.get('last_price', 0) or 0)
+                mid = ((bid + ask) / 2) if (bid and ask) else (last or bid or ask)
+                chain.append({
+                    'strike_price': float(c.get('strike_price', 0) or 0),
+                    'type': t,
+                    'last_price': mid,
+                })
+            # Compute the technical indicators and use them to drive strategy selection.
+            df = client.get_stock_bars(sym)
+            indicator_results = []
+            if not df.empty:
+                indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
+            recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
+            payload = {
+                'symbol': sym,
+                'sentiment': sentiment,
+                'strategies': [_card_dict(r) for r in recs],
+            }
+            run_coro(cache_set(key, payload, ttl=CACHE_TTL_OPTION_CHAIN))
+        return StrategiesResponse(
+            symbol=payload['symbol'],
+            sentiment=payload['sentiment'],
+            strategies=[
+                StrategyCard(
+                    name=c['name'], subtitle=c['subtitle'], is_bullish=c['is_bullish'],
+                    max_profit=c['max_profit'], max_loss=c['max_loss'], breakeven=c['breakeven'],
+                    return_on_risk=c['return_on_risk'],
+                    payoff_curve=[PayoffPoint(**p) for p in (c.get('payoff_curve') or [])],
+                )
+                for c in payload['strategies']
+            ],
+        )
     except AlpacaError as e:
         raise HTTPException(status_code=502, detail=str(e))

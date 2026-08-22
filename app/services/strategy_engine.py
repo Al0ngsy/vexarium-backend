@@ -32,6 +32,19 @@ def _long_call(strike, premium, current_price):
     }
 
 
+def _long_put(strike, premium, current_price):
+    return {
+        "name": "LONG PUT",
+        "subtitle": f"Buy {int(strike)}P — profit if price falls below ${strike - premium:.2f}",
+        "is_bullish": False,
+        "max_profit": None,
+        "max_loss": round(premium, 2),
+        "breakeven": round(strike - premium, 2),
+        "return_on_risk": None,
+        "payoff_curve": build_payoff_curve(strike, premium, current_price, False),
+    }
+
+
 def _cash_secured_put(strike, premium, current_price):
     max_loss = round(strike - premium, 2)
     ror = round(premium / max_loss, 4) if max_loss else 0
@@ -102,6 +115,7 @@ def _short_put(strike, premium, current_price):
 def compute_strategy(strategy_type, strike, premium, current_price, strike2=None, debit=None):
     strategies = {
         "long_call": _long_call,
+        "long_put": _long_put,
         "cash_secured_put": _cash_secured_put,
         "covered_call": _covered_call,
         "short_put": _short_put,
@@ -143,16 +157,28 @@ def _volatility_from_indicators(indicator_results) -> str:
     for r in indicator_results:
         name = str(r.get('name', '')).upper()
         if 'ATR' in name:
-            return 'high'  # ATR present and computed = use defined-risk framing
+            # ponytail: deliberate heuristic — any computed ATR => 'high' volatility
+            # framing. Upgrade path: ATR% = (ATR / price) vs a threshold (e.g. 2-3%)
+            # to classify high/medium instead of indicator presence alone.
+            return 'high'
     return 'medium'
 
 
-def recommend_strategies(sentiment, current_price, option_chain, indicator_results=None):
+def _nearest(rows, strike):
+    """Pick the contract whose strike is closest to the requested strike."""
+    return min(rows, key=lambda r: abs(float(r.get('strike_price', 0)) - strike))
+
+
+def recommend_strategies(sentiment, strike, option_chain, indicator_results=None):
     if not option_chain:
         return []
     calls = [c for c in option_chain if str(c.get('type', '')).lower() == 'call']
     puts = [c for c in option_chain if str(c.get('type', '')).lower() == 'put']
     result = []
+
+    def _premium(row):
+        return float(row.get('last_price', 0) or 0)
+
     # Prefer indicator-derived direction, fall back to the passed sentiment string.
     s = _direction_from_indicators(indicator_results)
     if s == 'neutral':
@@ -161,22 +187,28 @@ def recommend_strategies(sentiment, current_price, option_chain, indicator_resul
     # Volatility influences whether we lead with defined-risk spreads.
     vol = _volatility_from_indicators(indicator_results)
     if s == 'bullish' and calls:
-        c = calls[0]
+        c = _nearest(calls, strike)
+        result.append(compute_strategy('long_call', c['strike_price'], _premium(c), strike))
+        if puts:
+            p = _nearest(puts, strike)
+            result.append(compute_strategy('cash_secured_put', p['strike_price'], _premium(p), strike))
         if vol == 'high' and len(calls) > 1:
-            # High vol -> suggest a defined-risk bull call spread.
-            result.append(compute_strategy('bull_call_spread', c['strike_price'], c.get('last_price', 0) or 0, current_price,
-                                           strike2=calls[1]['strike_price'], debit=(c.get('last_price', 0) or 0)))
-        else:
-            result.append(compute_strategy('long_call', c['strike_price'], c.get('last_price', 0) or 0, current_price))
-            result.append(compute_strategy('cash_secured_put', c['strike_price'], c.get('last_price', 0) or 0, current_price))
+            # High vol -> add a defined-risk bull call spread on the two calls
+            # nearest the requested strike (buy lower, sell higher).
+            legs = sorted(calls, key=lambda r: (abs(float(r.get('strike_price', 0)) - strike), float(r.get('strike_price', 0))))[:2]
+            leg1, leg2 = sorted(legs, key=lambda r: float(r.get('strike_price', 0)))
+            debit = _premium(leg1) - _premium(leg2)
+            if debit > 0:  # skip inverted (negative-debit) spreads from noisy quotes
+                result.append(compute_strategy('bull_call_spread', leg1['strike_price'], _premium(leg1), strike,
+                                               strike2=leg2['strike_price'], debit=debit))
     elif s == 'bearish' and puts:
-        p = puts[0]
-        result.append(compute_strategy('short_put', p['strike_price'], p.get('last_price', 0) or 0, current_price))
+        p = _nearest(puts, strike)
+        result.append(compute_strategy('long_put', p['strike_price'], _premium(p), strike))
     else:
         if calls:
-            c = calls[0]
-            result.append(compute_strategy('long_call', c['strike_price'], c.get('last_price', 0) or 0, current_price))
+            c = _nearest(calls, strike)
+            result.append(compute_strategy('long_call', c['strike_price'], _premium(c), strike))
         if puts:
-            p = puts[0]
-            result.append(compute_strategy('short_put', p['strike_price'], p.get('last_price', 0) or 0, current_price))
+            p = _nearest(puts, strike)
+            result.append(compute_strategy('short_put', p['strike_price'], _premium(p), strike))
     return result

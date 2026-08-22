@@ -176,6 +176,11 @@ def option_chain_key(symbol: str) -> str:
     return f"optchain:{symbol}"
 
 
+def strategies_key(symbol: str, strike: float, expiration_gte: str, expiration_lte: str) -> str:
+    """Option strategy recommendations for a symbol/strike/expiry window."""
+    return f"strategies:{symbol}:{strike}:{expiration_gte}:{expiration_lte}"
+
+
 def ai_key(symbol: str, timeframe: str = "1d") -> str:
     from datetime import date
     return f"ai:{symbol}:{timeframe}:{date.today().isoformat()}"

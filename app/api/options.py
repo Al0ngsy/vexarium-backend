@@ -98,7 +98,7 @@ async def get_option_chain(
             bid = float(c.get("bid", 0) or 0)
             ask = float(c.get("ask", 0) or 0)
             last = float(c.get("last_price", 0) or 0)
-            mid = bid if bid and ask and last else (last or bid or ask)
+            mid = ((bid + ask) / 2) if (bid and ask) else (last or bid or ask)
             days_to_expiry = _dte(expiry)
             intrinsic = 0.0
             theoretical = mid
@@ -109,7 +109,7 @@ async def get_option_chain(
                     intrinsic = max(strike - current_price, 0)
                 theoretical = black_scholes_price(
                     strike=strike, price=current_price, days_to_expiry=days_to_expiry,
-                    implied_vol=iv if iv else 0.3, risk_free=0.04, is_call=is_call,
+                    implied_vol=iv if iv else 0.3, risk_free=settings.risk_free_rate, is_call=is_call,
                 ) if days_to_expiry > 0 else intrinsic
             time_value = max(theoretical - intrinsic, 0)
             spread = max(ask - bid, 0)
@@ -347,6 +347,7 @@ async def get_option_chance(
         result = prob_profit(
             strike=strike, premium=premium, current_price=float(current_price or 0),
             days_to_expiry=dte, implied_vol=iv, is_call=is_call,
+            risk_free=settings.risk_free_rate,
         )
         return OptionChanceResponse(
             symbol=sym,

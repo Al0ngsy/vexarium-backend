@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     take_profit_threshold: float = 0.10
     cut_loss_threshold: float = -0.08
 
+    # --- Options ---
+    # Risk-free rate for Black-Scholes / probability-of-profit models
+    # (env RISK_FREE_RATE). Dividends are ignored (American-option simplification).
+    risk_free_rate: float = 0.04
+
     # --- Rate limits ---
     rate_limit_free: int = 30
     rate_limit_pro: int = 200
