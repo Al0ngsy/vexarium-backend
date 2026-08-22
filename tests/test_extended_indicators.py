@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.services.indicator_engine import create_default_engine
+from app.services.indicator_engine import create_default_engine, create_pro_engine
 from app.services.indicators.extended import (
     ADXIndicator,
     ATRIndicator,
@@ -18,7 +18,6 @@ from app.services.indicators.extended import (
     ROCIndicator,
     VWAPIndicator,
     WILLRIndicator,
-    create_pro_engine,
 )
 
 VALID_VERDICTS = {"strong_buy", "buy", "hold", "sell", "strong_sell", "none"}

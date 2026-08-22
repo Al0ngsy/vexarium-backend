@@ -59,6 +59,25 @@ async def test_analysis_insufficient_data_indicators_none():
 
 
 @pytest.mark.asyncio
+async def test_analysis_exposes_ytd_change_pct():
+    """P5: ytd_change_pct from the market snapshot surfaces in the response."""
+    df = make_synthetic_df()
+    with patch("app.api.analysis.AlpacaClient") as MockClient:
+        mock_instance = MockClient.return_value
+        mock_instance.get_stock_bars.return_value = df
+        mock_instance.get_market_snapshot.return_value = {
+            "day_change_pct": 1.2, "ytd_change_pct": 18.5,
+        }
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/analysis", json={"symbol": "AAPL", "asset_type": "stock"})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["ytd_change_pct"] == 18.5
+            assert data["day_change_pct"] == 1.2
+
+
+@pytest.mark.asyncio
 async def test_analysis_not_found():
     with patch("app.api.analysis.AlpacaClient") as MockClient:
         mock_instance = MockClient.return_value

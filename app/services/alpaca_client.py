@@ -10,7 +10,8 @@ from typing import Optional
 from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDataClient
 from alpaca.data.historical.news import NewsClient
 from alpaca.data.requests import (
-    StockBarsRequest, StockLatestQuoteRequest, StockSnapshotRequest,
+    StockBarsRequest, StockLatestQuoteRequest, StockLatestTradeRequest,
+    StockSnapshotRequest,
     OptionSnapshotRequest, OptionChainRequest, NewsRequest
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -36,6 +37,18 @@ _YAHOO_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 }
 _EMPTY_BARS_COLUMNS = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
+
+
+def _bars_cache_json(df: pd.DataFrame) -> str:
+    """Serialize bars for the Redis cache, persisting ``df.attrs["source"]``.
+
+    ``DataFrame.to_json`` drops attrs (B6) — materialize the source into a
+    regular column so the FE chart-source hint survives the cache round trip.
+    """
+    if "source" in df.attrs:
+        df = df.copy()
+        df["source"] = str(df.attrs["source"])
+    return df.to_json()
 
 # Twelve Data — real-time intraday bars (no 15-min historical delay). Free
 # tier: 8 req/min, 800/day; ONE call returns up to 330 bars for a symbol, so
@@ -208,7 +221,7 @@ class AlpacaClient:
             df = _fetch_twelvedata_bars(symbol, res)
             if not df.empty:
                 df.attrs["source"] = "twelvedata"
-                run_coro(cache_set(key, df.to_json(), ttl=ttl))
+                run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
                 return df
         try:
             req = StockBarsRequest(
@@ -231,7 +244,7 @@ class AlpacaClient:
                 df = _fetch_yahoo_bars(symbol, days, interval=yahoo_interval)
                 if not df.empty:
                     df.attrs["source"] = "yahoo"  # Yahoo intraday is ~15 min delayed
-                    run_coro(cache_set(key, df.to_json(), ttl=ttl))
+                    run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
                     return df
                 return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
             rows = []
@@ -259,7 +272,7 @@ class AlpacaClient:
                 # last ~15 min (their historical-data rule) — quotes are the
                 # real-time part. The FE live-tick extends the last candle.
                 df.attrs["source"] = "alpaca"
-            run_coro(cache_set(key, df.to_json(), ttl=ttl))
+            run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
             return df
         except Exception as e:
             logger.error("Alpaca get_stock_bars failed for %s: %s", symbol, e)
@@ -270,7 +283,7 @@ class AlpacaClient:
                 df = _fetch_yahoo_bars(symbol, days)
                 if not df.empty:
                     df.attrs["source"] = "yahoo"
-                    run_coro(cache_set(key, df.to_json(), ttl=ttl))
+                    run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
                     return df
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
             raise AlpacaError(f"Failed to fetch stock bars for {symbol}")
@@ -286,12 +299,28 @@ class AlpacaClient:
             quote = resp.get(symbol) if isinstance(resp, dict) else resp
             if quote is None:
                 return {}
+            bid = float(getattr(quote, 'bid_price', 0) or 0)
+            ask = float(getattr(quote, 'ask_price', 0) or 0)
+            mid = (bid + ask) / 2 if bid and ask else None
             result = {
-                'bid': float(getattr(quote, 'bid_price', 0) or 0),
-                'ask': float(getattr(quote, 'ask_price', 0) or 0),
-                'last_price': float(getattr(quote, 'bid_price', 0) or getattr(quote, 'ask_price', 0) or 0),
+                'bid': bid,
+                'ask': ask,
+                'mid': mid,
+                'last_price': None,
                 'timestamp': getattr(quote, 'timestamp', None),
             }
+            # Real last trade (B3) — the quote endpoint has no trade price, so
+            # fetch it explicitly; fall back to mid -> bid -> ask if unavailable.
+            try:
+                treq = StockLatestTradeRequest(symbol_or_symbols=symbol)
+                tresp = self._stock.get_stock_latest_trade(treq)
+                trade = tresp.get(symbol) if isinstance(tresp, dict) else tresp
+                if trade is not None:
+                    result['last_price'] = float(getattr(trade, 'price', 0) or 0)
+            except Exception:
+                logger.debug("latest trade unavailable for %s", symbol)
+            if not result['last_price']:
+                result['last_price'] = mid or bid or ask
             run_coro(cache_set(key, result, ttl=CACHE_TTL_QUOTE))
             return result
         except Exception as e:

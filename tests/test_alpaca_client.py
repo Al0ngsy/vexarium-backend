@@ -308,16 +308,42 @@ class TestYahooBarsParser:
 
 
 class TestLatestQuote:
-    def test_returns_quote_dict(self, client):
+    def test_returns_real_last_trade_with_mid(self, client):
+        """B3: last_price is the real last trade, not the bid; mid is exposed."""
         quote = make_quote(104.9, 105.1, datetime.now(timezone.utc))
+        trade = make_trade(105.0, datetime.now(timezone.utc))
         client._stock.get_stock_latest_quote.return_value = {"AAPL": quote}
+        client._stock.get_stock_latest_trade.return_value = {"AAPL": trade}
 
         result = client.get_latest_quote("AAPL")
 
         assert result["bid"] == 104.9
         assert result["ask"] == 105.1
-        assert result["last_price"] == 104.9
+        assert result["mid"] == 105.0
+        assert result["last_price"] == 105.0
         assert "timestamp" in result
+
+    def test_no_trade_falls_back_to_mid(self, client):
+        """Trade unavailable -> last_price degrades to mid (then bid/ask)."""
+        quote = make_quote(104.9, 105.1, datetime.now(timezone.utc))
+        client._stock.get_stock_latest_quote.return_value = {"AAPL": quote}
+        client._stock.get_stock_latest_trade.return_value = {"AAPL": None}
+
+        result = client.get_latest_quote("AAPL")
+
+        assert result["mid"] == 105.0
+        assert result["last_price"] == 105.0
+
+    def test_quote_without_trade_or_bid_falls_back_to_ask(self, client):
+        quote = make_quote(0, 105.1, datetime.now(timezone.utc))
+        client._stock.get_stock_latest_quote.return_value = {"AAPL": quote}
+        client._stock.get_stock_latest_trade.side_effect = Exception("boom")
+
+        result = client.get_latest_quote("AAPL")
+
+        assert result["ask"] == 105.1
+        assert result["mid"] is None
+        assert result["last_price"] == 105.1
 
     def test_empty_quote_returns_empty_dict(self, client):
         client._stock.get_stock_latest_quote.return_value = {"AAPL": None}

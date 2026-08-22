@@ -391,8 +391,9 @@ def create_default_engine() -> IndicatorEngine:
 def create_pro_engine() -> IndicatorEngine:
     """Return an engine with all free + pro indicators registered.
 
-    Same core registry as :func:`create_default_engine`, plus the 5 extended
-    indicators (ATR, ADX, OBV, VWAP, Ichimoku).
+    Same core registry as :func:`create_default_engine`, plus the 11 extended
+    indicators (ATR, ADX, OBV, VWAP, Ichimoku, CCI, Williams %R, MFI, ROC,
+    PSAR, CMO).
     Imported lazily to avoid a circular import with the extended module.
     """
     from app.services.indicators.extended import (  # noqa: PLC0415

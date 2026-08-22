@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from app.services.indicator_engine import Indicator, IndicatorEngine, create_default_engine
+from app.services.indicator_engine import Indicator
 
 # pandas-ta-remake ships as the `pandas_ta_remake` import package but also
 # exposes a `pandas_ta` alias on some builds. Handle both gracefully.
@@ -458,30 +458,3 @@ CMOIndicator = Indicator(
     verdict=_cmo_verdict,
     min_rows=15,
 )
-
-
-# ---------------------------------------------------------------------------
-# Pro engine factory
-# ---------------------------------------------------------------------------
-
-
-def create_pro_engine() -> IndicatorEngine:
-    """Return an engine with all free + pro indicators registered.
-
-    Reuses the same free registry as ``create_default_engine`` and extends it
-    with the extended indicators (ATR, ADX, OBV, VWAP, Ichimoku, CCI,
-    Williams %R, MFI, ROC, PSAR, CMO).
-    """
-    engine = create_default_engine()
-    engine.register(ATRIndicator)
-    engine.register(ADXIndicator)
-    engine.register(OBVIndicator)
-    engine.register(VWAPIndicator)
-    engine.register(IchimokuIndicator)
-    engine.register(CCIIndicator)
-    engine.register(WILLRIndicator)
-    engine.register(MFIIndicator)
-    engine.register(ROCIndicator)
-    engine.register(PSARIndicator)
-    engine.register(CMOIndicator)
-    return engine

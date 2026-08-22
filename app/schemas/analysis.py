@@ -98,6 +98,7 @@ class CompanyInfo(BaseModel):
     # Market / valuation
     market_cap: Optional[float] = None
     shares_outstanding: Optional[float] = None
+    revenue_ttm: Optional[float] = None
     pe_ratio: Optional[float] = None
     forward_pe: Optional[float] = None
     ps_ratio: Optional[float] = None
@@ -124,6 +125,7 @@ class AnalysisResponse(BaseModel):
     timeframe: str = "1d"
     current_price: Optional[float] = None
     day_change_pct: Optional[float] = None
+    ytd_change_pct: Optional[float] = None
     analyzed_at: Optional[str] = None
     overall: OverallVerdict
     indicators: list[IndicatorResult]
