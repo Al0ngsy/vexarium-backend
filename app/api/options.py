@@ -193,6 +193,7 @@ class MatrixRequest(BaseModel):
     contract_symbol: str
     range_pct: float = 0.05
     quantity: int = 100
+    dates: int = 8
 
 
 @router.post("/{symbol}/matrix", response_model=OptionsMatrixResponse)
@@ -218,7 +219,7 @@ async def get_options_matrix(request: Request, symbol: str, body: MatrixRequest)
             current_price = quote.get("last_price") or quote.get("bid") or 0
         except Exception:
             current_price = strike  # fallback
-        expiries = _matrix_expiries(client, sym, expiry)
+        expiries = _matrix_date_columns(expiry, body.dates)
         matrix = build_payoff_matrix(
             strike=strike, premium=premium, current_price=float(current_price or 0),
             expiry_date=expiry, implied_vol=iv, is_call=is_call,
@@ -240,22 +241,29 @@ async def get_options_matrix(request: Request, symbol: str, body: MatrixRequest)
         raise HTTPException(status_code=502, detail=str(e))
 
 
-def _matrix_expiries(client, sym: str, primary_expiry: str) -> list[str]:
-    """Collect a handful of near expiries (primary + a few more) for the matrix."""
+def _matrix_date_columns(expiry: str, n: int) -> list[str]:
+    """Evenly spaced date columns from today up to (and including) the
+    contract's expiry.
+
+    Columns never extend past expiry: at expiry the contract has settled and
+    any later date would repeat the same terminal value. The count is
+    user-controlled (``dates``) and clamped to [2, 24] and to the days left.
+    """
     from datetime import date, timedelta
 
-    today = date.today()
-    lte = (today + timedelta(days=200)).isoformat()
     try:
-        contracts = client.get_option_contracts(
-            sym, today.isoformat(), lte, around_price=None, max_expiries=4
-        )
-        exps = sorted({str(c.get("expiration_date")) for c in contracts if str(c.get("expiration_date")) != "None"})
-    except Exception:
-        exps = []
-    if primary_expiry not in exps:
-        exps = [primary_expiry] + [e for e in exps if e != primary_expiry]
-    return exps[:6]
+        exp = datetime.strptime(expiry[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        exp = date.today()
+    dte = max((exp - date.today()).days, 0)
+    if dte <= 0:
+        return [exp.isoformat()]  # settled: single terminal column
+    n = max(2, min(int(n), 24, dte + 1))
+    step = dte / (n - 1) if n > 1 else 1
+    cols = [date.today() + timedelta(days=round(step * i)) for i in range(n)]
+    if cols:
+        cols[-1] = exp  # always end exactly on expiry
+    return sorted(set(c.isoformat() for c in cols))
 
 
 class OptionValueAtPriceResponse(BaseModel):

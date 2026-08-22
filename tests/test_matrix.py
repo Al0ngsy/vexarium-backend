@@ -36,3 +36,22 @@ def test_matrix_higher_strike_has_more_pl_for_call():
     bottom = m["strikes"][0]["cells"][0]["pl"]
     # For a call, a higher strike row (price above current) → higher P/L.
     assert top > bottom
+
+
+def test_matrix_date_columns_capped_at_expiry():
+    """Columns never extend past the contract's expiry and the count is clamped."""
+    from datetime import date, timedelta
+    from app.api.options import _matrix_date_columns
+
+    exp = (date.today() + timedelta(days=10)).isoformat()
+    cols = _matrix_date_columns(exp, 12)
+    # dte=10 → clamped to 11 columns (today..expiry), last one exactly expiry.
+    assert cols[-1] == exp
+    assert all(c <= exp for c in cols)
+    assert len(cols) == 11
+    # Requesting more than 24 clamps to 24; requesting 1 still yields >= 2.
+    assert len(_matrix_date_columns(exp, 99)) == 11
+    assert len(_matrix_date_columns(exp, 1)) == 2
+    # Already-expired contract: single column (today == expiry).
+    past = (date.today() - timedelta(days=1)).isoformat()
+    assert len(_matrix_date_columns(past, 8)) == 1
