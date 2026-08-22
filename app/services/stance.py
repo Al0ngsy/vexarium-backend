@@ -24,7 +24,7 @@ def compute_stance(entry_price: float, current_price: float, trade_type: str = "
                 days_to_expiry = (expiry - date.today()).days
                 if days_to_expiry < 7 and pnl_pct > 0 and pnl_pct < 0.05:
                     stance = "TAKE_PROFIT"
-                    reason = f"Option expires in {days_to_expiry} days with small profit of {pnl_pct:.1%}. Theta decay will erode remaining value — take profit now."
+                    reason = f"Option expires in {days_to_expiry} days with small profit of {pnl_pct:.1%}. Theta decay will erode remaining value, take profit now."
                 else:
                     stance = "HOLD"
                     reason = f"P/L of {pnl_pct:.1%} within normal range. {days_to_expiry} days to expiry."

@@ -22,7 +22,7 @@ def build_payoff_curve(strike, premium, current_price, is_call, price_range=None
 def _long_call(strike, premium, current_price):
     return {
         "name": "LONG CALL",
-        "subtitle": f"Buy {int(strike)}C — profit if price rises above ${strike + premium:.2f}",
+        "subtitle": f"Buy {int(strike)}C, profit if price rises above ${strike + premium:.2f}",
         "is_bullish": True,
         "max_profit": None,
         "max_loss": round(premium, 2),
@@ -35,7 +35,7 @@ def _long_call(strike, premium, current_price):
 def _long_put(strike, premium, current_price):
     return {
         "name": "LONG PUT",
-        "subtitle": f"Buy {int(strike)}P — profit if price falls below ${strike - premium:.2f}",
+        "subtitle": f"Buy {int(strike)}P, profit if price falls below ${strike - premium:.2f}",
         "is_bullish": False,
         "max_profit": None,
         "max_loss": round(premium, 2),
@@ -50,7 +50,7 @@ def _cash_secured_put(strike, premium, current_price):
     ror = round(premium / max_loss, 4) if max_loss else 0
     return {
         "name": "CASH-SECURED PUT",
-        "subtitle": f"Sell {int(strike)}P — have cash to buy shares if assigned",
+        "subtitle": f"Sell {int(strike)}P, have cash to buy shares if assigned",
         "is_bullish": True,
         "max_profit": round(premium, 2),
         "max_loss": max_loss,
@@ -64,7 +64,7 @@ def _covered_call(strike, premium, current_price):
     max_profit = round((strike - current_price) + premium, 2)
     return {
         "name": "COVERED CALL",
-        "subtitle": f"Own shares, sell {int(strike)}C — collect premium",
+        "subtitle": f"Own shares, sell {int(strike)}C, collect premium",
         "is_bullish": False,
         "max_profit": max_profit,
         "max_loss": None,
@@ -89,7 +89,7 @@ def _bull_call_spread(strike1, strike2, debit, current_price):
         p += step
     return {
         "name": "BULL CALL SPREAD",
-        "subtitle": f"Buy {int(strike1)}C, sell {int(strike2)}C — capped upside",
+        "subtitle": f"Buy {int(strike1)}C, sell {int(strike2)}C, capped upside",
         "is_bullish": True,
         "max_profit": max_profit,
         "max_loss": round(debit, 2),
@@ -102,7 +102,7 @@ def _bull_call_spread(strike1, strike2, debit, current_price):
 def _short_put(strike, premium, current_price):
     return {
         "name": "SHORT PUT",
-        "subtitle": f"Sell {int(strike)}P — collect premium, profit if price stays above breakeven",
+        "subtitle": f"Sell {int(strike)}P, collect premium, profit if price stays above breakeven",
         "is_bullish": True,
         "max_profit": round(premium, 2),
         "max_loss": round(strike - premium, 2),
