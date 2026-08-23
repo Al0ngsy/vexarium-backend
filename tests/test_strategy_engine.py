@@ -66,7 +66,7 @@ def test_recommend_bearish_long_put():
 
 def test_long_put_metrics():
     s = compute_strategy('long_put', 100, 5, 105)
-    assert s['max_profit'] is None
+    assert s['max_profit'] == 95  # strike - premium: stock can only fall to 0
     assert s['max_loss'] == 5
     assert s['breakeven'] == 95
     assert s['is_bullish'] is False
@@ -121,3 +121,21 @@ def test_bull_call_spread_debit_is_mid_difference():
     # debit = mid(95C) - mid(100C) = 3.0, NOT the first leg's full 8.0.
     assert spread['max_loss'] == 3.0
     assert spread['breakeven'] == 98.0
+
+
+def test_bear_spread_never_negative_expectancy():
+    """Regression: a zero-quote same-strike put in a different expiry used to
+    pair with the nearest put, yielding width 0, max profit < 0, ROR -100%."""
+    chain = [
+        {'strike_price': 100, 'type': 'put', 'last_price': 0.85, 'expiration_date': '2026-08-28'},
+        {'strike_price': 100, 'type': 'put', 'last_price': 0.0, 'expiration_date': '2026-09-11'},
+        {'strike_price': 95, 'type': 'put', 'last_price': 0.40, 'expiration_date': '2026-08-28'},
+        {'strike_price': 105, 'type': 'call', 'last_price': 3.0},
+    ]
+    recs = recommend_strategies('bearish', 100, chain)
+    sp = next((r for r in recs if r['name'] == 'BEAR PUT SPREAD'), None)
+    assert sp is None or sp['max_profit'] > 0
+    if sp is not None:
+        assert sp['return_on_risk'] > 0
+        # Legs must share one expiry.
+        assert sp['breakeven'] == 100 - 0.45  # 100P - (0.85 - 0.40) debit

@@ -37,7 +37,7 @@ def _long_put(strike, premium, current_price):
         "name": "LONG PUT",
         "subtitle": f"Buy {int(strike)}P, profit if price falls below ${strike - premium:.2f}",
         "is_bullish": False,
-        "max_profit": None,
+        "max_profit": round(strike - premium, 2),  # stock can only fall to 0
         "max_loss": round(premium, 2),
         "breakeven": round(strike - premium, 2),
         "return_on_risk": None,
@@ -67,7 +67,7 @@ def _covered_call(strike, premium, current_price):
         "subtitle": f"Own shares, sell {int(strike)}C, collect premium",
         "is_bullish": False,
         "max_profit": max_profit,
-        "max_loss": None,
+        "max_loss": round(current_price - premium, 2),  # shares to 0, premium kept
         "breakeven": round(current_price - premium, 2),
         "return_on_risk": None,
         "payoff_curve": build_payoff_curve(strike, premium, current_price, False),
@@ -201,12 +201,33 @@ def _nearest(rows, strike):
 def recommend_strategies(sentiment, strike, option_chain, indicator_results=None):
     if not option_chain:
         return []
-    calls = [c for c in option_chain if str(c.get('type', '')).lower() == 'call']
-    puts = [c for c in option_chain if str(c.get('type', '')).lower() == 'put']
-    result = []
-
     def _premium(row):
         return float(row.get('last_price', 0) or 0)
+
+    # Drop rows without a usable mid: zero-quote contracts poison debit math
+    # and would otherwise win _nearest with garbage premiums.
+    calls = [c for c in option_chain
+             if str(c.get('type', '')).lower() == 'call' and _premium(c) > 0]
+    puts = [c for c in option_chain
+            if str(c.get('type', '')).lower() == 'put' and _premium(c) > 0]
+    result = []
+
+    def _same_expiry(rows, anchor):
+        """Rows sharing the anchor row's expiration. Rows without a date share
+        one group, so bare test chains keep working."""
+        exp = anchor.get('expiration_date')
+        return [r for r in rows if r.get('expiration_date') == exp]
+
+    def _spread_rows(rows):
+        """Two nearest distinct strikes in one expiration. Returns None when
+        fewer than two usable strikes exist."""
+        rows = sorted(rows, key=lambda r: (abs(float(r.get('strike_price', 0)) - strike),
+                                           float(r.get('strike_price', 0))))[:2]
+        if len(rows) < 2:
+            return None
+        if float(rows[0]['strike_price']) == float(rows[1]['strike_price']):
+            return None  # duplicate strike from bad data
+        return (rows[0], rows[1])
 
     # Prefer indicator-derived direction, fall back to the passed sentiment string.
     s = _direction_from_indicators(indicator_results)
@@ -222,25 +243,30 @@ def recommend_strategies(sentiment, strike, option_chain, indicator_results=None
             p = _nearest(puts, strike)
             result.append(compute_strategy('cash_secured_put', p['strike_price'], _premium(p), strike))
         if vol == 'high' and len(calls) > 1:
-            # High vol -> add a defined-risk bull call spread on the two calls
-            # nearest the requested strike (buy lower, sell higher).
-            legs = sorted(calls, key=lambda r: (abs(float(r.get('strike_price', 0)) - strike), float(r.get('strike_price', 0))))[:2]
-            leg1, leg2 = sorted(legs, key=lambda r: float(r.get('strike_price', 0)))
-            debit = _premium(leg1) - _premium(leg2)
-            if debit > 0:  # skip inverted (negative-debit) spreads from noisy quotes
-                result.append(compute_strategy('bull_call_spread', leg1['strike_price'], _premium(leg1), strike,
-                                               strike2=leg2['strike_price'], debit=debit))
+            # High vol -> defined-risk bull call spread on two distinct strikes
+            # in the same expiration as the nearest call (buy lower, sell higher).
+            near = _nearest(calls, strike)
+            pair = _spread_rows(_same_expiry(calls, near))
+            if pair:
+                b, s = sorted(pair, key=lambda r: float(r.get('strike_price', 0)))
+                debit = _premium(b) - _premium(s)
+                if 0 < debit < float(s['strike_price']) - float(b['strike_price']):
+                    result.append(compute_strategy('bull_call_spread', b['strike_price'], _premium(b), strike,
+                                                   strike2=s['strike_price'], debit=debit))
     elif s == 'bearish' and puts:
         p = _nearest(puts, strike)
         result.append(compute_strategy('long_put', p['strike_price'], _premium(p), strike))
         if len(puts) > 1:
-            # Defined-risk bear put spread: buy the higher put, sell the lower.
-            legs = sorted(puts, key=lambda r: float(r.get('strike_price', 0)), reverse=True)[:2]
-            leg1, leg2 = legs[0], legs[1]
-            debit = _premium(leg1) - _premium(leg2)
-            if debit > 0:  # skip inverted spreads from noisy quotes
-                result.append(compute_strategy('bear_put_spread', leg1['strike_price'], _premium(leg1), strike,
-                                               strike2=leg2['strike_price'], debit=debit))
+            # Defined-risk bear put spread on two distinct strikes in the same
+            # expiration as the nearest put (buy higher, sell lower).
+            near = _nearest(puts, strike)
+            pair = _spread_rows(_same_expiry(puts, near))
+            if pair:
+                b, s = sorted(pair, key=lambda r: float(r.get('strike_price', 0)), reverse=True)
+                debit = _premium(b) - _premium(s)
+                if 0 < debit < float(b['strike_price']) - float(s['strike_price']):
+                    result.append(compute_strategy('bear_put_spread', b['strike_price'], _premium(b), strike,
+                                                   strike2=s['strike_price'], debit=debit))
         if calls:
             c = _nearest(calls, strike)
             result.append(compute_strategy('covered_call', c['strike_price'], _premium(c), strike))

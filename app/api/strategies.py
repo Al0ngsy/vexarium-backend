@@ -50,10 +50,13 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
                 ask = float(c.get('ask', 0) or 0)
                 last = float(c.get('last_price', 0) or 0)
                 mid = ((bid + ask) / 2) if (bid and ask) else (last or bid or ask)
+                if mid <= 0:
+                    continue  # no usable quote: skip, it poisons spreads and _nearest
                 chain.append({
                     'strike_price': float(c.get('strike_price', 0) or 0),
                     'type': t,
                     'last_price': mid,
+                    'expiration_date': c.get('expiration_date'),
                 })
             # Compute the technical indicators and use them to drive strategy selection.
             df = client.get_stock_bars(sym)
