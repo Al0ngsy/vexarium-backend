@@ -35,6 +35,7 @@ class AnalysisRequest(BaseModel):
     timeframe: str = "1d"
     options_enabled: bool = False
     strike: Optional[float] = None  # used by the options-strategies AI endpoint
+    strategy: Optional[str] = None  # exploration: explain this specific strategy
 
 class NewsArticle(BaseModel):
     """Alpaca news article. Alpaca returns id as int and created_at as a

@@ -71,6 +71,34 @@ def test_long_put_metrics():
     assert s['breakeven'] == 95
     assert s['is_bullish'] is False
 
+
+def test_recommend_bearish_spread_and_covered_call():
+    """Bearish now also suggests a defined-risk bear put spread and a covered
+    call for income, so the user sees more than one idea."""
+    chain = [
+        {'strike_price': 100, 'type': 'put', 'last_price': 4.0},
+        {'strike_price': 95, 'type': 'put', 'last_price': 2.0},
+        {'strike_price': 105, 'type': 'call', 'last_price': 3.0},
+    ]
+    recs = recommend_strategies('bearish', 100, chain)
+    names = [r['name'] for r in recs]
+    assert 'LONG PUT' in names
+    assert 'BEAR PUT SPREAD' in names
+    assert 'COVERED CALL' in names
+    assert 'SHORT PUT' not in names
+    sp = next(r for r in recs if r['name'] == 'BEAR PUT SPREAD')
+    assert sp['max_loss'] == 2.0  # debit: 4.0 - 2.0
+    assert sp['breakeven'] == 98.0  # 100 - 2
+    assert sp['is_bullish'] is False
+
+
+def test_bear_put_spread_metrics():
+    s = compute_strategy('bear_put_spread', 100, 4, 105, strike2=95, debit=2)
+    assert s['name'] == 'BEAR PUT SPREAD'
+    assert s['max_profit'] == 3.0  # (100-95) - 2
+    assert s['max_loss'] == 2.0
+    assert len(s['payoff_curve']) > 0
+
 def test_strike_centering_picks_nearest_not_first():
     chain = [
         {'strike_price': 90, 'type': 'call', 'last_price': 10.0},

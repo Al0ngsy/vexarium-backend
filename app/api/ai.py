@@ -294,14 +294,25 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
             "rid=%s options-strategies symbol=%s verdict=%s strike=%s contracts=%d indicators=%d",
             _rid(request), sym, sentiment, strike, len(chain), len(indicator_results),
         )
-        prompt = (
-            f"For {sym}, the technical verdict is {sentiment}. The user is "
-            f"considering an option near strike {strike}. Recommended strategies:\n"
-            f"{json.dumps(recs, indent=2, default=str)}\n\n"
-            "Explain in 2-4 short paragraphs which strategy fits the current "
-            "technical picture, its risk/reward, and what the user should watch. "
-            "This is educational, not financial advice."
-        )
+        if body.strategy:
+            prompt = (
+                f"For {sym}, the technical verdict is {sentiment}. The user is exploring the "
+                f"{body.strategy.upper()} strategy near strike {strike}. Explain in 2-4 short "
+                "paragraphs whether and why this strategy fits or does not fit the current "
+                "technical picture, its risk/reward profile, and what to watch. Format in "
+                "Markdown: a short bold headline, then short paragraphs or bullets. "
+                "This is educational, not financial advice."
+            )
+        else:
+            prompt = (
+                f"For {sym}, the technical verdict is {sentiment}. The user is "
+                f"considering an option near strike {strike}. Recommended strategies:\n"
+                f"{json.dumps(recs, indent=2, default=str)}\n\n"
+                "Explain in 2-4 short paragraphs which strategy fits the current "
+                "technical picture, its risk/reward, and what the user should watch. "
+                "Format in Markdown: a short bold headline, then short paragraphs or bullets. "
+                "This is educational, not financial advice."
+            )
         text = await llm_analyze(prompt)
         logger.info(
             "rid=%s options-strategies symbol=%s llm_done chars=%d model=%s",
