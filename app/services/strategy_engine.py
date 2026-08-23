@@ -198,6 +198,20 @@ def _nearest(rows, strike):
     return min(rows, key=lambda r: abs(float(r.get('strike_price', 0)) - strike))
 
 
+def timeframe_for_dte(dte):
+    """Match the verdict horizon to the contract's days-to-expiry: a 1d
+    indicator snapshot is the wrong lens for a 90-day contract."""
+    if dte is None:
+        return '1d'
+    if dte <= 7:
+        return '1h'
+    if dte <= 60:
+        return '1d'
+    if dte <= 365:
+        return '1w'
+    return '1mo'
+
+
 def recommend_strategies(sentiment, strike, option_chain, indicator_results=None):
     if not option_chain:
         return []

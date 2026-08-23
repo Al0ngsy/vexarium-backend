@@ -1,5 +1,14 @@
 import pytest
-from app.services.strategy_engine import compute_strategy, build_payoff_curve, recommend_strategies
+from app.services.strategy_engine import compute_strategy, build_payoff_curve, recommend_strategies, timeframe_for_dte
+
+
+def test_timeframe_for_dte():
+    # Verdict horizon follows the contract: short-dated -> intraday, long-dated -> weekly/monthly.
+    assert timeframe_for_dte(None) == '1d'
+    assert timeframe_for_dte(3) == '1h'
+    assert timeframe_for_dte(30) == '1d'
+    assert timeframe_for_dte(200) == '1w'
+    assert timeframe_for_dte(500) == '1mo'
 
 def test_long_call_metrics():
     s = compute_strategy('long_call', 100, 5, 105)

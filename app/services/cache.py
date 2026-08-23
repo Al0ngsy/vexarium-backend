@@ -176,9 +176,10 @@ def option_chain_key(symbol: str) -> str:
     return f"optchain:{symbol}"
 
 
-def strategies_key(symbol: str, strike: float, expiration_gte: str, expiration_lte: str) -> str:
-    """Option strategy recommendations for a symbol/strike/expiry window."""
-    return f"strategies:{symbol}:{strike}:{expiration_gte}:{expiration_lte}"
+def strategies_key(symbol: str, strike: float, expiration_gte: str, expiration_lte: str, timeframe: str = "1d") -> str:
+    """Option strategy recommendations for a symbol/strike/expiry window.
+    Keyed by verdict timeframe: a 1h verdict must not leak into a 1mo one."""
+    return f"strategies:{symbol}:{strike}:{expiration_gte}:{expiration_lte}:{timeframe}"
 
 
 def ai_key(symbol: str, timeframe: str = "1d") -> str:

@@ -1,11 +1,12 @@
 from fastapi import APIRouter, HTTPException, Query, Request
+from typing import Optional
 from ..middleware.rate_limit import limiter
 from ..middleware.validation import validate_symbol
 from ..schemas.strategy import StrategiesResponse, StrategyCard, PayoffPoint
 from ..services.alpaca_client import AlpacaClient, AlpacaError
 from ..services.cache import cache_get, cache_set, run_coro, strategies_key, CACHE_TTL_OPTION_CHAIN
 from ..services.indicator_engine import create_pro_engine
-from ..services.strategy_engine import recommend_strategies
+from ..services.strategy_engine import recommend_strategies, timeframe_for_dte
 from ..config import settings
 
 router = APIRouter(prefix="/options", tags=["strategies"])
@@ -23,11 +24,14 @@ def _card_dict(r: dict) -> dict:
 
 @router.get("/{symbol}/strategies", response_model=StrategiesResponse)
 @limiter.limit(f"{settings.rate_limit_free}/minute")
-async def get_strategies(request: Request, symbol: str, sentiment: str = Query('neutral'), strike: float = Query(...), expiration_gte: str = Query(...), expiration_lte: str = Query(...)):
+async def get_strategies(request: Request, symbol: str, sentiment: str = Query('neutral'), strike: float = Query(...), expiration_gte: str = Query(...), expiration_lte: str = Query(...), dte: Optional[float] = Query(None)):
     try:
         sym = validate_symbol(symbol)
         client = AlpacaClient()
-        key = strategies_key(sym, strike, expiration_gte, expiration_lte)
+        # Verdict horizon follows the contract's days-to-expiry (1h/1d/1w/1mo)
+        # so a 90-day contract is not judged by a 1-day momentum snapshot.
+        tf = timeframe_for_dte(dte)
+        key = strategies_key(sym, strike, expiration_gte, expiration_lte, tf)
         payload = run_coro(cache_get(key))
         if payload is None:
             # Market-data chain (bid/ask/last/IV/greeks), already cached 15 min
@@ -58,8 +62,11 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
                     'last_price': mid,
                     'expiration_date': c.get('expiration_date'),
                 })
-            # Compute the technical indicators and use them to drive strategy selection.
-            df = client.get_stock_bars(sym)
+            # Compute the technical indicators at the DTE-matched timeframe and
+            # use them to drive strategy selection.
+            df = client.get_stock_bars(sym, timeframe=tf)
+            if df.empty and tf != '1d':
+                df = client.get_stock_bars(sym)  # intraday miss -> daily fallback
             indicator_results = []
             if not df.empty:
                 indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
