@@ -257,62 +257,13 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
     # DEV: Pro gate removed during development; re-add before launch:
     #   if user_tier != "pro":
     #       raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access options AI.")
+    from ..middleware.logging import get_request_id as _rid
     try:
-        client = AlpacaClient()
-        from ..services.strategy_engine import recommend_strategies
-        from datetime import date, timedelta
-        gte = date.today().isoformat()
-        lte = (date.today() + timedelta(days=60)).isoformat()
-        contracts = client.get_option_chain(sym, expiration_gte=gte, expiration_lte=lte)
-        chain = []
-        for c in contracts:
-            raw_type = str(c.get('type', 'call'))
-            if '.' in raw_type:
-                raw_type = raw_type.rsplit('.', 1)[-1]
-            raw_type = raw_type.lower()
-            if raw_type not in ('call', 'put'):
-                continue
-            bid = float(c.get('bid', 0) or 0)
-            ask = float(c.get('ask', 0) or 0)
-            last = float(c.get('last_price', 0) or 0)
-            mid = ((bid + ask) / 2) if (bid and ask) else (last or bid or ask)
-            chain.append({
-                'strike_price': float(c.get('strike_price', 0)),
-                'type': raw_type,
-                'last_price': mid,
-            })
-        df = client.get_stock_bars(sym)
-        indicator_results = []
-        if not df.empty:
-            indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
-        from ..services.verdicts import aggregate
-        overall = aggregate(indicator_results)
-        sentiment = overall["overall_verdict"]
-        recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
-        from ..middleware.logging import get_request_id as _rid
+        prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy)
         logger.info(
-            "rid=%s options-strategies symbol=%s verdict=%s strike=%s contracts=%d indicators=%d",
-            _rid(request), sym, sentiment, strike, len(chain), len(indicator_results),
+            "rid=%s options-strategies symbol=%s verdict=%s strike=%s strategy=%s contracts=%d indicators=%d",
+            _rid(request), sym, sentiment, strike, body.strategy or "-", n_chain, n_ind,
         )
-        if body.strategy:
-            prompt = (
-                f"For {sym}, the technical verdict is {sentiment}. The user is exploring the "
-                f"{body.strategy.upper()} strategy near strike {strike}. Explain in 2-4 short "
-                "paragraphs whether and why this strategy fits or does not fit the current "
-                "technical picture, its risk/reward profile, and what to watch. Format in "
-                "Markdown: a short bold headline, then short paragraphs or bullets. "
-                "This is educational, not financial advice."
-            )
-        else:
-            prompt = (
-                f"For {sym}, the technical verdict is {sentiment}. The user is "
-                f"considering an option near strike {strike}. Recommended strategies:\n"
-                f"{json.dumps(recs, indent=2, default=str)}\n\n"
-                "Explain in 2-4 short paragraphs which strategy fits the current "
-                "technical picture, its risk/reward, and what the user should watch. "
-                "Format in Markdown: a short bold headline, then short paragraphs or bullets. "
-                "This is educational, not financial advice."
-            )
         text = await llm_analyze(prompt)
         logger.info(
             "rid=%s options-strategies symbol=%s llm_done chars=%d model=%s",
@@ -325,8 +276,108 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
             "model": settings.llm_model,
         }
     except Exception:
-        from ..middleware.logging import get_request_id as _rid
         logger.exception(
             "rid=%s options-strategies symbol=%s FAILED", _rid(request), sym
         )
         return {"symbol": sym, "analysis": "Options AI temporarily unavailable.", "strategies": [], "model": settings.llm_model}
+
+
+@router.post("/options-strategies/stream")
+@limiter.limit(f"{settings.rate_limit_pro}/minute")
+async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, user_tier: str = Depends(_ai_access)):
+    """SSE streaming options-strategies explanation (same event shape as
+    /analysis/ai/stream: data {"chunk": ...} then data {"done": true})."""
+    from fastapi.responses import StreamingResponse
+    from ..services.ai_analyzer import analyze_stream
+    from ..middleware.logging import get_request_id as _rid
+
+    sym = validate_symbol(body.symbol)
+    strike = body.strike or 0.0
+
+    async def event_generator():
+        try:
+            prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy)
+            logger.info(
+                "rid=%s options-strategies-stream symbol=%s verdict=%s strike=%s strategy=%s contracts=%d indicators=%d",
+                _rid(request), sym, sentiment, strike, body.strategy or "-", n_chain, n_ind,
+            )
+            async for token in analyze_stream(prompt):
+                yield "data: " + json.dumps({"chunk": token}) + "\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+        except Exception:
+            logger.exception("rid=%s options-strategies-stream FAILED", _rid(request))
+            yield "data: " + json.dumps({"chunk": "Options AI temporarily unavailable. Review the indicators manually or come back later."}) + "\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+async def _prepare_options_explanation(sym: str, strike: float, strategy: str | None):
+    """Shared by the regular and streaming options-strategies endpoints: builds
+    the strategy recommendations and the LLM prompt (same footer and heading
+    format as the stock AI briefing)."""
+    client = AlpacaClient()
+    from ..services.strategy_engine import recommend_strategies
+    from datetime import date, timedelta
+    gte = date.today().isoformat()
+    lte = (date.today() + timedelta(days=60)).isoformat()
+    contracts = client.get_option_chain(sym, expiration_gte=gte, expiration_lte=lte)
+    chain = []
+    for c in contracts:
+        raw_type = str(c.get('type', 'call'))
+        if '.' in raw_type:
+            raw_type = raw_type.rsplit('.', 1)[-1]
+        raw_type = raw_type.lower()
+        if raw_type not in ('call', 'put'):
+            continue
+        bid = float(c.get('bid', 0) or 0)
+        ask = float(c.get('ask', 0) or 0)
+        last = float(c.get('last_price', 0) or 0)
+        mid = ((bid + ask) / 2) if (bid and ask) else (last or bid or ask)
+        chain.append({
+            'strike_price': float(c.get('strike_price', 0)),
+            'type': raw_type,
+            'last_price': mid,
+        })
+    df = client.get_stock_bars(sym)
+    indicator_results = []
+    if not df.empty:
+        indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
+    from ..services.verdicts import aggregate
+    overall = aggregate(indicator_results)
+    sentiment = overall["overall_verdict"]
+    recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
+    footer = (
+        "\n\nAlways end your response with EXACTLY this footer (blank line, dash line, bold disclaimer, dash line):\n\n"
+        "----------------------------------------\n"
+        "**This is not financial advice. AI can make/will make mistakes.**\n"
+        "----------------------------------------"
+    )
+    if strategy:
+        prompt = (
+            f"For {sym}, the technical verdict is {sentiment}. The user is exploring the "
+            f"{strategy.upper()} strategy near strike {strike}. Explain in 2-4 short "
+            "sections whether and why this strategy fits or does not fit the current "
+            "technical picture, its risk/reward profile, and what to watch. Format in "
+            "Markdown: a short bold headline line, then short ## subheaders with bullets. "
+            "This is educational, not financial advice."
+        ) + footer
+    else:
+        prompt = (
+            f"For {sym}, the technical verdict is {sentiment}. The user is "
+            f"considering an option near strike {strike}. Recommended strategies:\n"
+            f"{json.dumps(recs, indent=2, default=str)}\n\n"
+            "Explain in 2-4 short sections which strategy fits the current "
+            "technical picture, its risk/reward, and what the user should watch. "
+            "Format in Markdown: a short bold headline line, then short ## subheaders with bullets. "
+            "This is educational, not financial advice."
+        ) + footer
+    return prompt, recs, sentiment, len(chain), len(indicator_results)
