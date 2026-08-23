@@ -289,6 +289,11 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
         overall = aggregate(indicator_results)
         sentiment = overall["overall_verdict"]
         recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
+        from ..middleware.logging import get_request_id as _rid
+        logger.info(
+            "rid=%s options-strategies symbol=%s verdict=%s strike=%s contracts=%d indicators=%d",
+            _rid(request), sym, sentiment, strike, len(chain), len(indicator_results),
+        )
         prompt = (
             f"For {sym}, the technical verdict is {sentiment}. The user is "
             f"considering an option near strike {strike}. Recommended strategies:\n"
@@ -298,6 +303,10 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
             "This is educational, not financial advice."
         )
         text = await llm_analyze(prompt)
+        logger.info(
+            "rid=%s options-strategies symbol=%s llm_done chars=%d model=%s",
+            _rid(request), sym, len(text or ""), settings.llm_model,
+        )
         return {
             "symbol": sym,
             "strategies": recs,
@@ -305,5 +314,8 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
             "model": settings.llm_model,
         }
     except Exception:
-        logger.error("Options-strategies AI failed", exc_info=True)
+        from ..middleware.logging import get_request_id as _rid
+        logger.exception(
+            "rid=%s options-strategies symbol=%s FAILED", _rid(request), sym
+        )
         return {"symbol": sym, "analysis": "Options AI temporarily unavailable.", "strategies": [], "model": settings.llm_model}
