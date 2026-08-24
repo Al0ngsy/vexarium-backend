@@ -5,4 +5,4 @@ __pycache__
 dist
 build
 .venv
-learning/.DS_Store
+learning
