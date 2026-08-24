@@ -9,8 +9,6 @@ database that may not be running.
 """
 from __future__ import annotations
 
-import logging
-
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -21,6 +19,7 @@ from sqlalchemy.orm import DeclarativeBase
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from .config import settings
+from .logging import get_logger
 
 
 def _ssl_for_url(database_url: str) -> str | bool:
@@ -60,7 +59,7 @@ def async_engine_for_url(database_url: str) -> AsyncEngine:
         url, pool_pre_ping=True, connect_args={"ssl": _ssl_for_url(database_url)}
     )
 
-logger = logging.getLogger("vexarium.db")
+logger = get_logger("db")
 
 # Re-export Base so models can import it from a single place.
 from .models.trade import Base  # noqa: F401  (declared by the model module)
@@ -100,6 +99,7 @@ async def dispose_db() -> None:
     global _engine, _session_factory
     if _engine is not None:
         await _engine.dispose()
+        logger.info("database engine disposed")
     _engine = None
     _session_factory = None
 

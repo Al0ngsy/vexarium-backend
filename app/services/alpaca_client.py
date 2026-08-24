@@ -1,6 +1,6 @@
 import io
-import logging
 import re
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 import pandas as pd
@@ -20,6 +20,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
 from alpaca.trading.enums import ContractType
 from ..config import settings
+from ..logging import get_logger
 from .cache import (
     cache_get, cache_set, run_coro,
     bars_key, quote_key, news_key, option_chain_key,
@@ -28,7 +29,7 @@ from .cache import (
 )
 from .exceptions import AlpacaError, SymbolNotFoundError, SubscriptionRequiredError
 
-logger = logging.getLogger('vexarium.alpaca')
+logger = get_logger("alpaca")
 
 # Yahoo fallback for symbols outside Alpaca's universe. Windows Chrome UA —
 # Yahoo rate-limits/429s the macOS UA from datacenter IPs (Render); the
@@ -68,6 +69,8 @@ def _fetch_twelvedata_bars(symbol: str, res: str) -> pd.DataFrame:
     bad shape) — callers fall through to the Alpaca/Yahoo path.
     """
     cols = _EMPTY_BARS_COLUMNS
+    t0 = time.monotonic()
+    logger.debug("twelvedata bars fetch symbol=%s interval=%s outputsize=%d", symbol.upper(), res, _TD_OUTPUTSIZE)
     try:
         resp = httpx.get(
             _TD_URL,
@@ -84,6 +87,8 @@ def _fetch_twelvedata_bars(symbol: str, res: str) -> pd.DataFrame:
         data = resp.json()
         values = data.get("values") or []
         if data.get("status") != "ok" or not values:
+            logger.debug("twelvedata bars empty symbol=%s interval=%s duration_ms=%d",
+                         symbol, res, int((time.monotonic() - t0) * 1000))
             return pd.DataFrame(columns=cols)
         # values arrive NEWEST-first; reverse to ascending bar order.
         rows = [
@@ -97,9 +102,12 @@ def _fetch_twelvedata_bars(symbol: str, res: str) -> pd.DataFrame:
             }
             for v in reversed(values)
         ]
+        logger.debug("twelvedata bars done symbol=%s interval=%s rows=%d duration_ms=%d",
+                     symbol, res, len(rows), int((time.monotonic() - t0) * 1000))
         return pd.DataFrame(rows)
     except Exception:
-        logger.debug("Twelve Data bars failed for %s", symbol)
+        logger.debug("twelvedata bars failed symbol=%s interval=%s duration_ms=%d",
+                     symbol, res, int((time.monotonic() - t0) * 1000))
         return pd.DataFrame(columns=cols)
 
 
@@ -139,7 +147,9 @@ def _fetch_yahoo_bars(symbol: str, days: int = 365, interval: str = "1d") -> pd.
     then query2 hosts, same as company_info.py.
     """
     rng = _yahoo_range(days)
+    t0 = time.monotonic()
     last_err: Exception | None = None
+    logger.debug("yahoo bars fetch symbol=%s range=%s interval=%s", symbol, rng, interval)
     for host in ('query1', 'query2'):
         try:
             url = (
@@ -173,12 +183,16 @@ def _fetch_yahoo_bars(symbol: str, days: int = 365, interval: str = "1d") -> pd.
                     'timestamp': pd.to_datetime(ts, unit='s', utc=True),
                 })
             if rows:
+                logger.debug("yahoo bars done symbol=%s range=%s rows=%d duration_ms=%d",
+                             symbol, rng, len(rows), int((time.monotonic() - t0) * 1000))
                 return pd.DataFrame(rows)
             last_err = RuntimeError('no rows in Yahoo response')
         except Exception as e:  # noqa: BLE001
             last_err = e
             continue
-    logger.warning('Yahoo bars fallback failed for %s: %s', symbol, last_err)
+    ms = int((time.monotonic() - t0) * 1000)
+    logger.warning('yahoo bars fetch failed symbol=%s range=%s error=%s duration_ms=%d',
+                   symbol, rng, last_err, ms)
     return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
 
 
@@ -197,6 +211,7 @@ class AlpacaClient:
         """
         if timeframe not in TIMEFRAMES:
             raise ValueError(f"unsupported timeframe: {timeframe}")
+        t0 = time.monotonic()
         mult, unit, tf_days, yahoo_interval = TIMEFRAMES[timeframe]
         if days > tf_days:
             days = tf_days  # cap at what the data source offers
@@ -222,6 +237,8 @@ class AlpacaClient:
             if not df.empty:
                 df.attrs["source"] = "twelvedata"
                 run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
+                logger.info("bars fetch done symbol=%s timeframe=%s rows=%d source=%s duration_ms=%d",
+                            symbol, timeframe, len(df), "twelvedata", int((time.monotonic() - t0) * 1000))
                 return df
         try:
             req = StockBarsRequest(
@@ -241,11 +258,15 @@ class AlpacaClient:
             if not bars:
                 # OTC/Pink-Sheet ADRs (SMERY, RNMBY, …) return no bars from
                 # Alpaca. Fall back to keyless Yahoo bars before giving up.
+                logger.warning("alpaca bars empty for %s timeframe=%s, falling back to yahoo", symbol, timeframe)
                 df = _fetch_yahoo_bars(symbol, days, interval=yahoo_interval)
                 if not df.empty:
                     df.attrs["source"] = "yahoo"  # Yahoo intraday is ~15 min delayed
                     run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
+                    logger.info("bars fetch done symbol=%s timeframe=%s rows=%d source=%s duration_ms=%d",
+                                symbol, timeframe, len(df), "yahoo", int((time.monotonic() - t0) * 1000))
                     return df
+                logger.warning("bars unavailable symbol=%s timeframe=%s (alpaca empty, yahoo empty)", symbol, timeframe)
                 return pd.DataFrame(columns=_EMPTY_BARS_COLUMNS)
             rows = []
             for bar in bars:
@@ -265,6 +286,8 @@ class AlpacaClient:
             if len(df) < 201:
                 yahoo_df = _fetch_yahoo_bars(symbol, days, interval=yahoo_interval)
                 if len(yahoo_df) > len(df):
+                    logger.warning("alpaca bars shallow rows=%d, using yahoo rows=%d symbol=%s timeframe=%s",
+                                   len(df), len(yahoo_df), symbol, timeframe)
                     df = yahoo_df
                     df.attrs["source"] = "yahoo"  # Yahoo intraday is ~15 min delayed
             else:
@@ -273,9 +296,11 @@ class AlpacaClient:
                 # real-time part. The FE live-tick extends the last candle.
                 df.attrs["source"] = "alpaca"
             run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
+            logger.info("bars fetch done symbol=%s timeframe=%s rows=%d source=%s duration_ms=%d",
+                        symbol, timeframe, len(df), df.attrs.get("source") or "alpaca", int((time.monotonic() - t0) * 1000))
             return df
         except Exception as e:
-            logger.error("Alpaca get_stock_bars failed for %s: %s", symbol, e)
+            logger.exception("alpaca get_stock_bars failed symbol=%s timeframe=%s", symbol, timeframe)
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
                 # Alpaca rejected the symbol outright — it may still be a real
@@ -284,11 +309,14 @@ class AlpacaClient:
                 if not df.empty:
                     df.attrs["source"] = "yahoo"
                     run_coro(cache_set(key, _bars_cache_json(df), ttl=ttl))
+                    logger.info("bars fetch done symbol=%s timeframe=%s rows=%d source=%s duration_ms=%d",
+                                symbol, timeframe, len(df), "yahoo", int((time.monotonic() - t0) * 1000))
                     return df
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
             raise AlpacaError(f"Failed to fetch stock bars for {symbol}")
 
     def get_latest_quote(self, symbol: str) -> dict:
+        t0 = time.monotonic()
         key = quote_key(symbol)
         cached = run_coro(cache_get(key))
         if cached is not None:
@@ -322,9 +350,12 @@ class AlpacaClient:
             if not result['last_price']:
                 result['last_price'] = mid or bid or ask
             run_coro(cache_set(key, result, ttl=CACHE_TTL_QUOTE))
+            logger.info("quote fetch done symbol=%s last_price=%s bid=%s ask=%s duration_ms=%d",
+                        symbol, result['last_price'], result['bid'], result['ask'],
+                        int((time.monotonic() - t0) * 1000))
             return result
         except Exception as e:
-            logger.error("Alpaca get_latest_quote failed for %s: %s", symbol, e)
+            logger.exception("alpaca get_latest_quote failed symbol=%s", symbol)
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")
@@ -341,6 +372,7 @@ class AlpacaClient:
             'price': None, 'day_change_pct': None, 'bid': None, 'ask': None,
             'prev_close': None, 'high_52w': None, 'low_52w': None, 'ytd_change_pct': None,
         }
+        t0 = time.monotonic()
         # 1. Live quote/trade from snapshot endpoint.
         try:
             req = StockSnapshotRequest(symbol_or_symbols=symbol)
@@ -364,7 +396,7 @@ class AlpacaClient:
                     if px and prev_close:
                         result['day_change_pct'] = round((px - prev_close) / prev_close * 100, 2)
         except Exception as e:
-            logger.error("Alpaca get_market_snapshot (live) failed for %s: %s", symbol, e)
+            logger.exception("alpaca get_market_snapshot (live) failed symbol=%s", symbol)
 
         # 2. Statistics from daily bars (52-week high/low, YTD).
         if df is not None and not df.empty and 'close' in df:
@@ -386,6 +418,9 @@ class AlpacaClient:
                                 result['ytd_change_pct'] = round((last - first) / first * 100, 2)
                 except Exception:
                     pass
+        logger.info("market snapshot done symbol=%s price=%s prev_close=%s day_change_pct=%s duration_ms=%d",
+                    symbol, result.get('price'), result.get('prev_close'), result.get('day_change_pct'),
+                    int((time.monotonic() - t0) * 1000))
         return result
 
     def get_option_contracts(
@@ -407,6 +442,7 @@ class AlpacaClient:
            window.
         """
         try:
+            t0 = time.monotonic()
             results: list = []
             # Single-type path: paginate that type directly.
             if contract_type:
@@ -420,6 +456,7 @@ class AlpacaClient:
             # near-term, mid-term AND far-dated (LEAPS) strikes.
             expiries = self._discover_expiries(underlying, expiration_gte, expiration_lte)
             if not expiries:
+                logger.debug("option contracts none underlying=%s (no expiries)", underlying)
                 return []
             picked = self._spread_expiries(expiries, max_expiries)
             for exp in picked:
@@ -429,9 +466,11 @@ class AlpacaClient:
                         budget=max(1, limit // (len(picked) * 2)),
                         around_price=around_price,
                     ))
+            logger.info("option contracts done underlying=%s count=%d expiries=%d duration_ms=%d",
+                        underlying, len(results), len(picked), int((time.monotonic() - t0) * 1000))
             return results
         except Exception as e:
-            logger.error("Alpaca get_option_contracts failed for %s: %s", underlying, e)
+            logger.exception("alpaca get_option_contracts failed underlying=%s", underlying)
             err_msg = str(e).lower()
             if 'subscription' in err_msg or 'permission' in err_msg:
                 raise SubscriptionRequiredError(f"Options data subscription required for {underlying}")
@@ -491,7 +530,9 @@ class AlpacaClient:
             _query(d.isoformat(), slice_end.isoformat())
             d = slice_end + timedelta(days=1)
 
-        return sorted([e for e in expiries if e and e != 'None'])[:max_dates]
+        found = sorted([e for e in expiries if e and e != 'None'])[:max_dates]
+        logger.debug("expiries discovered underlying=%s count=%d", underlying, len(found))
+        return found
 
     @staticmethod
     def _spread_expiries(expiries: list[str], n: int) -> list[str]:
@@ -520,12 +561,14 @@ class AlpacaClient:
                     seen.append(e)
                 if len(seen) >= n:
                     break
+        logger.debug("expiries spread count=%d -> %d", len(expiries), len(seen[:n]))
         return seen[:n]
 
 
     def _fetch_contracts(self, underlying, gte, lte, strike_gte, strike_lte,
                          contract_type, budget, around_price=None) -> list:
         """Fetch one contract type in a date window, paginating until budget or done."""
+        t0 = time.monotonic()
         results: list = []
         token: Optional[str] = None
         fetched = 0
@@ -569,9 +612,12 @@ class AlpacaClient:
             if not token or not contracts:
                 break
             fetched += len(contracts)
+        logger.debug("contracts fetched underlying=%s type=%s gte=%s lte=%s count=%d duration_ms=%d",
+                     underlying, contract_type, gte, lte, len(results), int((time.monotonic() - t0) * 1000))
         return results
 
     def get_option_snapshot(self, symbol: str) -> dict:
+        t0 = time.monotonic()
         try:
             req = OptionSnapshotRequest(symbol_or_symbols=symbol)
             resp = self._option.get_option_snapshot(req)
@@ -590,16 +636,19 @@ class AlpacaClient:
                 }
             latest_trade = getattr(snap, 'latest_trade', None)
             latest_quote = getattr(snap, 'latest_quote', None)
+            iv = float(getattr(snap, 'implied_volatility', 0) or 0)
+            logger.info("option snapshot done symbol=%s iv=%s duration_ms=%d",
+                        symbol, round(iv, 4), int((time.monotonic() - t0) * 1000))
             return {
                 'greeks': greeks_dict,
-                'implied_volatility': float(getattr(snap, 'implied_volatility', 0) or 0),
+                'implied_volatility': iv,
                 'latest_trade_price': float(getattr(latest_trade, 'price', 0) or 0) if latest_trade else 0.0,
                 'latest_trade_timestamp': getattr(latest_trade, 'timestamp', None) if latest_trade else None,
                 'bid': float(getattr(latest_quote, 'bid_price', 0) or 0) if latest_quote else 0.0,
                 'ask': float(getattr(latest_quote, 'ask_price', 0) or 0) if latest_quote else 0.0,
             }
         except Exception as e:
-            logger.error("Alpaca get_option_snapshot failed for %s: %s", symbol, e)
+            logger.exception("alpaca get_option_snapshot failed symbol=%s", symbol)
             err_msg = str(e).lower()
             if 'subscription' in err_msg or 'permission' in err_msg:
                 raise SubscriptionRequiredError(f"Options data subscription required for {symbol}")
@@ -631,6 +680,7 @@ class AlpacaClient:
         None), this gives real bid/ask + greeks per strike.
         """
         try:
+            t0 = time.monotonic()
             key = option_chain_key(underlying)
             if use_cache:
                 cached = run_coro(cache_get(key))
@@ -681,9 +731,11 @@ class AlpacaClient:
                 page_token = token
             if use_cache:
                 run_coro(cache_set(key, results, ttl=CACHE_TTL_OPTION_CHAIN))
+            logger.info("option chain done underlying=%s rows=%d duration_ms=%d",
+                        underlying, len(results), int((time.monotonic() - t0) * 1000))
             return results
         except Exception as e:
-            logger.error("Alpaca get_option_chain failed for %s: %s", underlying, e)
+            logger.exception("alpaca get_option_chain failed underlying=%s", underlying)
             err_msg = str(e).lower()
             if 'subscription' in err_msg or 'permission' in err_msg:
                 raise SubscriptionRequiredError(f"Options data subscription required for {underlying}")
@@ -746,7 +798,9 @@ class AlpacaClient:
 
     def _fetch_google_news(self, symbol: str, limit: int = 6) -> list:
         """Keyless multi-source headlines via Google News RSS. Never raises."""
+        t0 = time.monotonic()
         try:
+            logger.debug("google news fetch symbol=%s limit=%d", symbol, limit)
             q = urllib.parse.quote(f"{symbol} stock")
             url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
             resp = httpx.get(url, headers=self._GNEWS_HEADERS, timeout=10, follow_redirects=True)
@@ -782,12 +836,16 @@ class AlpacaClient:
                     "symbols": [symbol],
                     "id": None,
                 })
+            logger.debug("google news done symbol=%s items=%d duration_ms=%d",
+                         symbol, len(out), int((time.monotonic() - t0) * 1000))
             return out
         except Exception:
-            logger.warning("Google News RSS failed for %s", symbol, exc_info=True)
+            logger.warning("google news RSS failed symbol=%s duration_ms=%d",
+                           symbol, int((time.monotonic() - t0) * 1000), exc_info=True)
             return []
 
     def get_news(self, symbol: str, limit: int = 10) -> list:
+        t0 = time.monotonic()
         key = news_key(symbol)
         cached = run_coro(cache_get(key))
         if cached is not None:
@@ -820,9 +878,11 @@ class AlpacaClient:
                 elif j < len(extra):
                     merged.append(extra[j]); j += 1
             run_coro(cache_set(key, merged, ttl=CACHE_TTL_NEWS))
+            logger.info("news fetch done symbol=%s articles=%d (alpaca=%d google=%d) duration_ms=%d",
+                        symbol, len(merged), len(result), len(extra), int((time.monotonic() - t0) * 1000))
             return merged
         except Exception as e:
-            logger.error("Alpaca get_news failed for %s: %s", symbol, e)
+            logger.exception("alpaca get_news failed symbol=%s", symbol)
             err_msg = str(e).lower()
             if 'not found' in err_msg or 'invalid symbol' in err_msg:
                 raise SymbolNotFoundError(f"Symbol not found: {symbol}")

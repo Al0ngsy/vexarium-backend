@@ -12,7 +12,10 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from app.logging import get_logger
 from app.services.indicator_engine import Indicator
+
+logger = get_logger("extended")
 
 # pandas-ta-remake ships as the `pandas_ta_remake` import package but also
 # exposes a `pandas_ta` alias on some builds. Handle both gracefully.
@@ -458,3 +461,6 @@ CMOIndicator = Indicator(
     verdict=_cmo_verdict,
     min_rows=15,
 )
+
+logger.debug("extended indicators defined count=%d",
+             len([v for v in globals().values() if isinstance(v, Indicator)]))

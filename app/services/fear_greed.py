@@ -11,15 +11,16 @@ widget shows "unavailable" instead of erroring.
 """
 from __future__ import annotations
 
-import logging
 import math
+import time
 from datetime import datetime, timezone
 
 import httpx
 
+from ..logging import get_logger
 from .cache import CACHE_TTL_NEWS, cache_get, cache_set, run_coro
 
-logger = logging.getLogger("vexarium.fear_greed")
+logger = get_logger("fear_greed")
 
 _FEAR_GREED_PAGE = "https://edition.cnn.com/markets/fear-and-greed"
 _FEAR_GREED_JSON = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
@@ -89,6 +90,7 @@ def get_fear_greed() -> dict | None:
     cached = run_coro(cache_get("fear-greed"))
     if cached is not None:
         return cached
+    t0 = time.monotonic()
     try:
         with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
             # 1) acquire cookies from the page (bot-block handshake)
@@ -105,9 +107,14 @@ def get_fear_greed() -> dict | None:
             resp.raise_for_status()
             parsed = parse(resp.json())
     except Exception:
-        logger.warning("Fear & Greed fetch failed", exc_info=True)
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.warning("fear&greed fetch failed duration_ms=%d", ms, exc_info=True)
         return None
+    ms = int((time.monotonic() - t0) * 1000)
     if parsed is None:
+        logger.warning("fear&greed payload unparseable duration_ms=%d", ms)
         return None
     run_coro(cache_set("fear-greed", parsed, ttl=CACHE_TTL_NEWS))
+    logger.info("fear&greed done score=%s rating=%s history=%d duration_ms=%d",
+                parsed.get("score"), parsed.get("rating"), len(parsed.get("history") or []), ms)
     return parsed

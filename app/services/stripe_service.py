@@ -1,10 +1,9 @@
-import logging
-
 import stripe
 
 from ..config import settings
+from ..logging import get_logger
 
-logger = logging.getLogger('vexarium.stripe')
+logger = get_logger("stripe")
 
 stripe.api_key = settings.stripe_secret_key
 
@@ -18,6 +17,7 @@ def create_checkout_session(
     # Resolve the Pro price id. A placeholder means Stripe isn't configured yet.
     price_id = settings.stripe_price_id
     if not price_id or price_id == "price_pro_monthly":
+        logger.warning("checkout skipped: STRIPE_PRICE_ID not configured (user_id=%s)", user_id)
         raise ValueError("STRIPE_PRICE_ID is not configured. Create a Pro price in the "
                          "Stripe dashboard and set STRIPE_PRICE_ID in the environment.")
     session = stripe.checkout.Session.create(
@@ -27,6 +27,7 @@ def create_checkout_session(
         success_url=success_url or settings.stripe_success_url,
         cancel_url=cancel_url or settings.stripe_cancel_url,
     )
+    logger.info("stripe checkout created user_id=%s tier=%s session=%s", user_id, tier, session.id)
     return session
 
 
@@ -43,13 +44,16 @@ async def handle_webhook(payload: bytes, sig_header: str) -> dict:
         if customer_id and user_id >= 1:
             await store.set_stripe_customer(user_id, customer_id)
         await store.set_tier(user_id, "pro")
+        logger.info("stripe webhook event=checkout.session.completed user_id=%s tier=pro", user_id)
         return {"event": "upgraded", "user_id": user_id, "tier": "pro"}
 
     if event["type"] == "customer.subscription.deleted":
         customer_id = _to_dict(event["data"]["object"]).get("customer")
         downgraded = await _downgrade_by_customer(store, customer_id)
+        logger.info("stripe webhook event=customer.subscription.deleted user_id=%s tier=free", downgraded)
         return {"event": "downgraded", "user_id": downgraded, "tier": "free"}
 
+    logger.debug("stripe webhook event=%s (unhandled)", event["type"])
     return {"event": event["type"], "user_id": None, "tier": None}
 
 

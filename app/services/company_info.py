@@ -18,13 +18,14 @@ source fails, that field is simply omitted — never a hard error for the caller
 """
 from __future__ import annotations
 
-import logging
+import time
 
 import httpx
 
+from ..logging import get_logger
 from .cache import cache_get, cache_set, run_coro
 
-logger = logging.getLogger("vexarium.company")
+logger = get_logger("company")
 
 # TTL: company name/exchange/52w are effectively static intraday; fundamentals
 # update quarterly; the description is static. A long TTL keeps analysis cheap.
@@ -84,9 +85,11 @@ def _fetch_quote_summary(symbol: str) -> dict:
                 resp.raise_for_status()
                 payload = resp.json()
             result = payload["quoteSummary"]["result"][0]
+            logger.debug("quoteSummary fetched symbol=%s host=%s", symbol, host)
             break
         except Exception as e:  # noqa: BLE001
             last_err = e
+            logger.debug("quoteSummary host failed symbol=%s host=%s", symbol, host)
             continue
     else:
         raise RuntimeError(f"quoteSummary failed on all hosts: {last_err}")
@@ -160,6 +163,7 @@ def _headquarters(ap: dict) -> str:
 
 def _fetch_yahoo_meta(symbol: str) -> dict:
     """Fetch company meta from Yahoo Finance v8 chart endpoint (keyless)."""
+    logger.debug("yahoo meta fetch symbol=%s", symbol)
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d"
     with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT) as client:
         resp = client.get(url)
@@ -185,6 +189,7 @@ def _fetch_wikipedia_description(name: str, symbol: str = "") -> str:
     title = _wikipedia_title(name, symbol)
     if not title:
         return ""
+    logger.debug("wikipedia fetch symbol=%s title=%s", symbol, title)
     url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
     with httpx.Client(headers=_WIKI_HEADERS, timeout=_HTTP_TIMEOUT) as client:
         resp = client.get(url)
@@ -210,6 +215,7 @@ def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
     base = f"https://stockanalysis.com/stocks/{symbol.lower()}/"
     result: dict = {}
 
+    logger.debug("stockanalysis fetch symbol=%s", symbol)
     with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
         # 1. Main page: market cap, revenue, dividend, 52-week range, beta.
         resp = client.get(base)
@@ -249,7 +255,7 @@ def _fetch_stockanalysis_fundamentals(symbol: str) -> dict:
             for label, value in stat_rows:
                 data[label.strip().lower()] = value.strip()
         except Exception:
-            pass
+            logger.debug("stockanalysis statistics page failed symbol=%s", symbol)
 
     def num(label: str) -> float | None:
         v = data.get(label)
@@ -354,19 +360,22 @@ def get_company_info(symbol: str) -> dict:
     except Exception:
         pass
 
+    t0 = time.monotonic()
     result: dict = {"symbol": symbol}
 
     # Rich fundamentals + core identity (name/exchange/currency) via quoteSummary.
     # This is the primary source; if it fails the panel still shows symbol-only.
+    source = "quote_summary"
     try:
         result.update(_fetch_quote_summary(symbol))
     except Exception:
-        logger.debug("Yahoo quoteSummary unavailable for %s", symbol)
+        logger.warning("yahoo quoteSummary unavailable for %s, trying stockanalysis.com", symbol)
         # Fallback: stockanalysis.com fundamentals (keyless HTML scrape).
+        source = "stockanalysis"
         try:
             result.update(_fetch_stockanalysis_fundamentals(symbol))
         except Exception:
-            logger.debug("stockanalysis.com fundamentals unavailable for %s", symbol)
+            logger.warning("stockanalysis.com fundamentals unavailable for %s", symbol)
 
     # 52-week range + description (best-effort, non-blocking).
     try:
@@ -401,6 +410,9 @@ def get_company_info(symbol: str) -> dict:
         run_coro(cache_set(key, result, ttl=CACHE_TTL_COMPANY))
     except Exception:
         pass
+    ms = int((time.monotonic() - t0) * 1000)
+    logger.info("company info done symbol=%s source=%s fields=%d duration_ms=%d",
+                symbol, source, len(result), ms)
     return result
 
 
@@ -435,6 +447,7 @@ def _yahoo_search_quotes(query: str, limit: int = 10) -> list[dict]:
     last_err: Exception | None = None
     for host in ("query1", "query2"):
         try:
+            logger.debug("yahoo search fetch q=%s host=%s", query, host)
             url = f"https://{host}.finance.yahoo.com/v1/finance/search"
             with httpx.Client(headers=_HEADERS, timeout=_HTTP_TIMEOUT) as client:
                 resp = client.get(
@@ -457,11 +470,12 @@ def _yahoo_search_quotes(query: str, limit: int = 10) -> list[dict]:
                 run_coro(cache_set(key, result, ttl=_YAHOO_SEARCH_CACHE_TTL))
             except Exception:
                 pass
+            logger.debug("yahoo search done q=%s hits=%d", query, len(result))
             return result
         except Exception as e:  # noqa: BLE001
             last_err = e
             continue
-    logger.debug("Yahoo search unavailable for %s: %s", query, last_err)
+    logger.warning("yahoo search unavailable q=%s error=%s", query, last_err)
     return []
 
 

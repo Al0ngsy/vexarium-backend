@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ..logging import get_logger
+
+logger = get_logger("chart")
+
 
 def build_price_series(df: pd.DataFrame, limit: int = 120) -> list[dict]:
     """Return last `limit` OHLC points as {t, open, high, low, close}.
@@ -29,6 +33,7 @@ def build_price_series(df: pd.DataFrame, limit: int = 120) -> list[dict]:
             "close": round(float(row["close"]), 4),
             "source": source,
         })
+    logger.debug("price series built points=%d limit=%d source=%s", len(out), limit, source)
     return out
 
 
@@ -36,6 +41,7 @@ def compute_series_for(df: pd.DataFrame, name: str) -> list[float]:
     """Return the full-length indicator series for a known indicator name, or []."""
     import pandas_ta_remake as ta  # type: ignore
     close = df["close"]
+    logger.debug("indicator series compute name=%s rows=%d", name, len(df))
     if name == "RSI(14)":
         s = ta.rsi(close, length=14)
         return list(s) if s is not None else []
@@ -70,7 +76,10 @@ def compute_series_for(df: pd.DataFrame, name: str) -> list[float]:
         ts = df["timestamp"] if "timestamp" in df.columns else df.index
         work = df.set_index(pd.DatetimeIndex(pd.to_datetime(ts)))
         s = ta.vwap(work["high"], work["low"], work["close"], work["volume"])
-        return list(s) if s is not None else []
+        result = list(s) if s is not None else []
+        logger.debug("indicator series computed name=%s points=%d", name, len(result))
+        return result
+    logger.debug("indicator series unsupported name=%s (empty)", name)
     return []
 
 

@@ -6,16 +6,16 @@ to keep the same behavior the codebase already relies on.
 """
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session_factory, db_enabled
+from ..logging import get_logger
 from ..models.trade import User
 
-logger = logging.getLogger("vexarium.users")
+logger = get_logger("users")
 
 
 class UserStore:
@@ -63,17 +63,20 @@ class PostgresUserStore(UserStore):
             s.add(u)
             await s.commit()
             await s.refresh(u)
+            logger.info("user created user_id=%s tier=%s backend=postgres", u.id, tier)
             return _to_dict(u)
 
     async def get_by_email(self, email) -> Optional[dict]:
         async with self._sf() as s:
             res = await s.execute(select(User).where(User.email == email))
             u = res.scalar_one_or_none()
+            logger.debug("user lookup by_email found=%s", u is not None)
             return _to_dict(u) if u else None
 
     async def get_by_id(self, user_id) -> Optional[dict]:
         async with self._sf() as s:
             u = await s.get(User, user_id)
+            logger.debug("user lookup by_id user_id=%s found=%s", user_id, u is not None)
             return _to_dict(u) if u else None
 
     async def set_tier(self, user_id, tier) -> None:
@@ -82,6 +85,7 @@ class PostgresUserStore(UserStore):
             if u:
                 u.tier = tier
                 await s.commit()
+                logger.info("tier set user_id=%s tier=%s", user_id, tier)
 
     async def set_stripe_customer(self, user_id, customer_id) -> None:
         async with self._sf() as s:
@@ -89,11 +93,13 @@ class PostgresUserStore(UserStore):
             if u:
                 u.stripe_customer_id = customer_id
                 await s.commit()
+                logger.debug("stripe customer linked user_id=%s", user_id)
 
     async def get_by_stripe_customer(self, customer_id) -> Optional[dict]:
         async with self._sf() as s:
             res = await s.execute(select(User).where(User.stripe_customer_id == customer_id))
             u = res.scalar_one_or_none()
+            logger.debug("user lookup by_stripe_customer found=%s", u is not None)
             return _to_dict(u) if u else None
 
 
@@ -113,23 +119,30 @@ class InMemoryUserStore(UserStore):
         self._users[self._next_id] = u
         self._by_email[email] = u
         self._next_id += 1
+        logger.info("user created user_id=%s tier=%s backend=memory", u["id"], tier)
         return u
 
     async def get_by_email(self, email) -> Optional[dict]:
-        return self._by_email.get(email)
+        u = self._by_email.get(email)
+        logger.debug("user lookup by_email found=%s", u is not None)
+        return u
 
     async def get_by_id(self, user_id) -> Optional[dict]:
-        return self._users.get(user_id)
+        u = self._users.get(user_id)
+        logger.debug("user lookup by_id user_id=%s found=%s", user_id, u is not None)
+        return u
 
     async def set_tier(self, user_id, tier) -> None:
         u = self._users.get(user_id)
         if u:
             u["tier"] = tier
+            logger.info("tier set user_id=%s tier=%s", user_id, tier)
 
     async def set_stripe_customer(self, user_id, customer_id) -> None:
         u = self._users.get(user_id)
         if u:
             u["stripe_customer_id"] = customer_id
+            logger.debug("stripe customer linked user_id=%s", user_id)
 
     async def get_by_stripe_customer(self, customer_id) -> Optional[dict]:
         for u in self._users.values():
@@ -155,8 +168,10 @@ def get_user_store() -> UserStore:
         sf = get_session_factory()
         if sf is not None:
             _singleton = PostgresUserStore(sf)
+            logger.info("user store initialized backend=postgres")
             return _singleton
     _singleton = InMemoryUserStore()
+    logger.info("user store initialized backend=memory")
     return _singleton
 
 

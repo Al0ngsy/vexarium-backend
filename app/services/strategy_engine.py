@@ -1,5 +1,9 @@
 from typing import Optional
 
+from ..logging import get_logger
+
+logger = get_logger("strategy")
+
 
 def build_payoff_curve(strike, premium, current_price, is_call, price_range=None):
     if price_range is None:
@@ -16,6 +20,7 @@ def build_payoff_curve(strike, premium, current_price, is_call, price_range=None
         pl = round(intrinsic - premium, 2)
         curve.append({"price": round(p, 2), "pl": pl})
         p += step
+    logger.debug("payoff curve built points=%d range=%s", len(curve), price_range)
     return curve
 
 
@@ -149,13 +154,23 @@ def compute_strategy(strategy_type, strike, premium, current_price, strike2=None
         # Requires a second strike; debit falls back to the first leg's premium.
         if not strike2:
             raise ValueError("bull_call_spread requires strike2")
-        return _bull_call_spread(strike, strike2, debit if debit else premium, current_price)
+        result = _bull_call_spread(strike, strike2, debit if debit else premium, current_price)
+        logger.info("strategy computed type=%s name=%s strike=%s strike2=%s breakeven=%s",
+                    strategy_type, result["name"], strike, strike2, result["breakeven"])
+        return result
     if strategy_type == "bear_put_spread":
         if not strike2:
             raise ValueError("bear_put_spread requires strike2")
-        return _bear_put_spread(strike, strike2, debit if debit else premium, current_price)
+        result = _bear_put_spread(strike, strike2, debit if debit else premium, current_price)
+        logger.info("strategy computed type=%s name=%s strike=%s strike2=%s breakeven=%s",
+                    strategy_type, result["name"], strike, strike2, result["breakeven"])
+        return result
     if strategy_type in strategies:
-        return strategies[strategy_type](strike, premium, current_price)
+        result = strategies[strategy_type](strike, premium, current_price)
+        logger.info("strategy computed type=%s name=%s strike=%s premium=%s breakeven=%s",
+                    strategy_type, result["name"], strike, premium, result["breakeven"])
+        return result
+    logger.warning("strategy compute unknown type=%s", strategy_type)
     raise ValueError(f"Unknown strategy: {strategy_type}")
 
 
@@ -173,10 +188,13 @@ def _direction_from_indicators(indicator_results) -> str:
             bearish += 1
     net = bullish - bearish
     if net >= 2:
-        return 'bullish'
-    if net <= -2:
-        return 'bearish'
-    return 'neutral'
+        direction = 'bullish'
+    elif net <= -2:
+        direction = 'bearish'
+    else:
+        direction = 'neutral'
+    logger.debug("direction from indicators bullish=%d bearish=%d -> %s", bullish, bearish, direction)
+    return direction
 
 
 def _volatility_from_indicators(indicator_results) -> str:
@@ -189,7 +207,9 @@ def _volatility_from_indicators(indicator_results) -> str:
             # ponytail: deliberate heuristic — any computed ATR => 'high' volatility
             # framing. Upgrade path: ATR% = (ATR / price) vs a threshold (e.g. 2-3%)
             # to classify high/medium instead of indicator presence alone.
+            logger.debug("volatility from indicators -> high (atr present)")
             return 'high'
+    logger.debug("volatility from indicators -> medium")
     return 'medium'
 
 
@@ -214,6 +234,7 @@ def timeframe_for_dte(dte):
 
 def recommend_strategies(sentiment, strike, option_chain, indicator_results=None):
     if not option_chain:
+        logger.debug("strategies skipped (empty option chain)")
         return []
     def _premium(row):
         return float(row.get('last_price', 0) or 0)
@@ -292,4 +313,6 @@ def recommend_strategies(sentiment, strike, option_chain, indicator_results=None
         if puts:
             p = _nearest(puts, strike)
             result.append(compute_strategy('short_put', p['strike_price'], _premium(p), strike))
+    logger.info("strategies recommended strike=%s direction=%s vol=%s count=%d",
+                strike, s, vol, len(result))
     return result

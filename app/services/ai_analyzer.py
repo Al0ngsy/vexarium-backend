@@ -1,7 +1,11 @@
 import json
+import time
 import httpx
 from typing import Optional
 from ..config import settings
+from ..logging import get_logger
+
+logger = get_logger("ai")
 
 SYSTEM_PROMPT = """You are a senior market analyst for VEXARIUM, a pre-trade research tool. Your job is to give a beginner-friendly but professionally deep briefing that helps someone decide whether to buy, hold, or sell a stock/ETF.
 
@@ -73,6 +77,7 @@ def _key_levels(indicator_results: list, market_data: Optional[dict]) -> dict:
     # Dedupe + sort, keep nearest 3 each side.
     levels["support"] = sorted(set(levels["support"]), reverse=True)[:3]
     levels["resistance"] = sorted(set(levels["resistance"]))[:3]
+    logger.debug("key levels derived support=%d resistance=%d", len(levels["support"]), len(levels["resistance"]))
     return levels
 
 
@@ -120,16 +125,21 @@ def build_prompt(indicator_results: list, overall_verdict: dict,
 
 async def analyze(prompt: str, skip_ai: bool = False) -> str:
     if skip_ai or not settings.llm_api_key:
+        logger.debug("llm skipped reason=%s", "skip_ai" if skip_ai else "no_api_key")
         return "AI analysis unavailable. Review the technical indicators manually or come back later."
     # Single model from the OpenCode Go subscription; a rate limit or outage
     # surfaces as "temporarily unavailable" (no free-tier fallbacks anymore).
+    model = settings.llm_model
+    # Never log prompt content — length only (prompts embed news/company data).
+    logger.info("llm call start model=%s prompt_chars=%d", model, len(prompt))
+    t0 = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{settings.llm_base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.llm_api_key}"},
                 json={
-                    "model": settings.llm_model,
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     # Generous budget: this model spends tokens on internal
                     # reasoning BEFORE producing content. Too small a budget
@@ -142,9 +152,14 @@ async def analyze(prompt: str, skip_ai: bool = False) -> str:
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
             if content and content.strip():
+                ms = int((time.monotonic() - t0) * 1000)
+                logger.info("llm call done model=%s chars=%d duration_ms=%d", model, len(content), ms)
                 return content
-    except Exception:
-        pass
+            logger.warning("llm call empty content model=%s duration_ms=%d",
+                           model, int((time.monotonic() - t0) * 1000))
+    except Exception as exc:
+        logger.warning("llm call failed model=%s duration_ms=%d error=%s",
+                       model, int((time.monotonic() - t0) * 1000), type(exc).__name__)
     return "AI analysis temporarily unavailable. Review the technical indicators manually or come back later."
 
 
@@ -157,11 +172,17 @@ async def analyze_stream(prompt: str, skip_ai: bool = False):
     string on failure, like a failed non-streaming call).
     """
     if skip_ai or not settings.llm_api_key:
+        logger.debug("llm stream skipped reason=%s", "skip_ai" if skip_ai else "no_api_key")
         return
+    model = settings.llm_model
+    # Never log prompt content — length only.
+    logger.info("llm stream start model=%s prompt_chars=%d", model, len(prompt))
+    t0 = time.monotonic()
     # Mid-stream errors propagate — a partial answer must not be silently
     # dropped or swapped for another model's continuation (the INTC bug: a
     # truncated briefing was cached for 24h).
     started = False
+    chars = 0
     try:
         async with httpx.AsyncClient(timeout=180) as client:
             async with client.stream(
@@ -169,7 +190,7 @@ async def analyze_stream(prompt: str, skip_ai: bool = False):
                 f"{settings.llm_base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.llm_api_key}"},
                 json={
-                    "model": settings.llm_model,
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": True,
                     "max_tokens": 8192,
@@ -195,9 +216,15 @@ async def analyze_stream(prompt: str, skip_ai: bool = False):
                     # only stream the actual answer.
                     if content:
                         started = True
+                        chars += len(content)
                         yield content
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.info("llm stream done model=%s chars=%d duration_ms=%d", model, chars, ms)
         return
-    except Exception:
+    except Exception as exc:
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.warning("llm stream failed model=%s chars=%d duration_ms=%d error=%s",
+                       model, chars, ms, type(exc).__name__)
         if started:
             raise
     # Request-time failure (rate limit, outage) — caller renders the

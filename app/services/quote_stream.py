@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -22,10 +21,11 @@ from typing import Any
 import websockets
 
 from ..config import settings
+from ..logging import get_logger
 from .cache import cache_get, cache_set, prev_close_key
 from .alpaca_client import AlpacaClient
 
-logger = logging.getLogger("vexarium.services.quote_stream")
+logger = get_logger("quote_stream")
 
 # Free tier = IEX feed. SIP upgrade: change to /v2/sip.
 ALPACA_STREAM_URL = "wss://stream.data.alpaca.markets/v2/iex"
@@ -136,6 +136,7 @@ class QuoteStreamManager:
             self._ensure_task()
         for s in fresh:
             await self._ensure_prev_close(s)
+        logger.info("quote stream subscribe symbols=%d fresh=%s", len(symbols), fresh)
         return q
 
     async def _ensure_prev_close(self, symbol: str) -> None:
@@ -146,6 +147,7 @@ class QuoteStreamManager:
             cached = await cache_get(prev_close_key(symbol))
             if cached is not None:
                 self._prev_close[symbol] = float(cached)
+                logger.debug("prev_close from cache symbol=%s value=%s", symbol, cached)
                 return
         except Exception:
             pass
@@ -155,6 +157,7 @@ class QuoteStreamManager:
             self._prev_close[symbol] = float(pc) if pc else None
             if pc:
                 await cache_set(prev_close_key(symbol), float(pc), ttl=CACHE_TTL_PREV_CLOSE)
+            logger.info("prev_close resolved symbol=%s value=%s", symbol, self._prev_close[symbol])
         except Exception as exc:
             logger.warning("prev_close unavailable for %s: %s", symbol, exc)
             self._prev_close[symbol] = None
@@ -209,6 +212,7 @@ class QuoteStreamManager:
                         {"action": "subscribe", "trades": symbols, "quotes": symbols}
                     )
                 )
+            logger.info("quote stream connected url=%s symbols=%d", self._url, len(symbols))
             async for raw in ws:
                 try:
                     msgs = json.loads(raw)
@@ -246,6 +250,7 @@ class QuoteStreamManager:
             except asyncio.CancelledError:
                 pass
             self._task = None
+            logger.debug("quote stream task cancelled")
 
 
 # Module-level singleton used by the SSE endpoint.

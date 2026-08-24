@@ -7,6 +7,9 @@ import redis.asyncio as aioredis
 from cachetools import TTLCache
 
 from ..config import settings
+from ..logging import get_logger
+
+logger = get_logger("cache")
 
 _ttl_cache = TTLCache(maxsize=1000, ttl=3600)
 
@@ -27,6 +30,7 @@ def _redis() -> Optional[aioredis.Redis]:
     if _redis_client is None or _redis_url != settings.redis_url:
         _redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
         _redis_url = settings.redis_url
+        logger.debug("redis client created (url changed or first use)")
     return _redis_client
 
 
@@ -46,6 +50,7 @@ def run_coro(coro):
             result["value"] = asyncio.run(coro)
         except Exception:
             result["error"] = True
+            logger.debug("cache coroutine failed (treated as miss)")
 
     t = threading.Thread(target=_worker)
     t.start()
@@ -65,14 +70,19 @@ async def lock_acquire(key: str, ttl: int = 120) -> bool:
     client = _redis()
     if client is not None:
         try:
-            return bool(await client.set(key, "1", nx=True, ex=ttl))
+            won = bool(await client.set(key, "1", nx=True, ex=ttl))
+            logger.debug("lock acquire key=%s ttl=%d won=%s", key, ttl, won)
+            return won
         except Exception:
+            logger.warning("lock_acquire redis error key=%s (fail-open)", key)
             return True  # fail-open: if Redis hiccups, let the request proceed
     lock = _locks.setdefault(key, asyncio.Lock())
     try:
         await asyncio.wait_for(lock.acquire(), timeout=0.01)
+        logger.debug("lock acquire key=%s won=True", key)
         return True
     except asyncio.TimeoutError:
+        logger.debug("lock acquire key=%s won=False (held by another)", key)
         return False
 
 
@@ -81,11 +91,15 @@ async def lock_held(key: str) -> bool:
     client = _redis()
     if client is not None:
         try:
-            return bool(await client.exists(key))
+            held = bool(await client.exists(key))
+            logger.debug("lock held key=%s held=%s", key, held)
+            return held
         except Exception:
             return False
     lock = _locks.get(key)
-    return bool(lock and lock.locked())
+    held = bool(lock and lock.locked())
+    logger.debug("lock held key=%s held=%s", key, held)
+    return held
 
 
 async def lock_release(key: str) -> None:
@@ -94,12 +108,14 @@ async def lock_release(key: str) -> None:
     if client is not None:
         try:
             await client.delete(key)
+            logger.debug("lock release key=%s", key)
         except Exception:
-            pass
+            logger.warning("lock_release redis error key=%s", key)
         return
     lock = _locks.get(key)
     if lock and lock.locked():
         lock.release()
+        logger.debug("lock release key=%s", key)
 
 
 async def cache_get(key: str) -> Optional[Any]:
@@ -107,10 +123,20 @@ async def cache_get(key: str) -> Optional[Any]:
     if client is not None:
         try:
             val = await client.get(key)
-            return json.loads(val) if val else None
-        except Exception:
+            if val:
+                logger.info("cache hit key=%s backend=redis", key)
+                return json.loads(val)
+            logger.info("cache miss key=%s backend=redis", key)
             return None
-    return _ttl_cache.get(key)
+        except Exception:
+            logger.warning("cache_get redis error key=%s (treated as miss)", key)
+            return None
+    val = _ttl_cache.get(key)
+    if val is not None:
+        logger.info("cache hit key=%s backend=memory", key)
+    else:
+        logger.info("cache miss key=%s backend=memory", key)
+    return val
 
 
 async def cache_set(key: str, value: Any, ttl: int = 3600) -> None:
@@ -121,10 +147,12 @@ async def cache_set(key: str, value: Any, ttl: int = 3600) -> None:
             # datetime objects from model_dump() — without this, json.dumps
             # raises and the value is silently never cached (AI/news keys).
             await client.set(key, json.dumps(value, default=str), ex=ttl)
+            logger.info("cache set key=%s ttl=%d backend=redis", key, ttl)
         except Exception:
-            pass
+            logger.warning("cache_set redis error key=%s ttl=%d", key, ttl)
         return
     _ttl_cache[key] = value
+    logger.info("cache set key=%s ttl=%d backend=memory", key, ttl)
 
 
 async def cache_delete(key: str) -> None:
@@ -132,10 +160,12 @@ async def cache_delete(key: str) -> None:
     if client is not None:
         try:
             await client.delete(key)
+            logger.debug("cache delete key=%s backend=redis", key)
         except Exception:
-            pass
+            logger.warning("cache_delete redis error key=%s", key)
         return
     _ttl_cache.pop(key, None)
+    logger.debug("cache delete key=%s backend=memory", key)
 
 
 CACHE_TTL_BARS = 6 * 3600      # daily bars change once per day

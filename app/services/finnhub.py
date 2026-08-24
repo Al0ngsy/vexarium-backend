@@ -7,15 +7,16 @@ earnings change slowly; peers rarely).
 """
 from __future__ import annotations
 
-import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from ..config import settings
+from ..logging import get_logger
 from .cache import CACHE_TTL_FINNHUB, cache_get, cache_set, finnhub_key, run_coro
 
-logger = logging.getLogger("vexarium.finnhub")
+logger = get_logger("finnhub")
 _FINNHUB_URL = "https://finnhub.io/api/v1"
 _TIMEOUT = 10.0
 
@@ -23,7 +24,11 @@ _TIMEOUT = 10.0
 def _get(path: str, params: dict) -> dict | list | None:
     """GET a Finnhub endpoint; None on no key / any failure."""
     if not settings.finnhub_api_key:
+        logger.debug("finnhub get skipped path=%s (no api key)", path)
         return None
+    t0 = time.monotonic()
+    # Never log the token: log the request params minus the credential.
+    safe_params = {k: v for k, v in params.items() if k != "token"}
     try:
         resp = httpx.get(
             f"{_FINNHUB_URL}/{path}",
@@ -31,9 +36,14 @@ def _get(path: str, params: dict) -> dict | list | None:
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()
+        ms = int((time.monotonic() - t0) * 1000)
+        status = getattr(resp, "status_code", None)
+        logger.info("finnhub get done path=%s status=%s duration_ms=%d params=%s",
+                    path, status, ms, safe_params)
         return resp.json()
     except Exception:
-        logger.debug("Finnhub %s failed", path)
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.debug("finnhub get failed path=%s duration_ms=%d params=%s", path, ms, safe_params)
         return None
 
 
@@ -41,10 +51,12 @@ def _cached(symbol: str, kind: str, fetch) -> list:
     key = finnhub_key(symbol, kind)
     cached = run_coro(cache_get(key))
     if cached is not None:
+        logger.debug("finnhub cached payload symbol=%s kind=%s count=%d", symbol, kind, len(cached))
         return cached
     data = fetch()
     if data:
         run_coro(cache_set(key, data, ttl=CACHE_TTL_FINNHUB))
+    logger.debug("finnhub fetch done symbol=%s kind=%s count=%d", symbol, kind, len(data or []))
     return data or []
 
 
@@ -102,11 +114,14 @@ def get_peers(symbol: str) -> list[str]:
 
 def get_finnhub_bundle(symbol: str) -> dict:
     """One payload for the FE widgets; each kind cached independently."""
-    return {
+    bundle = {
         "insider": get_insider_transactions(symbol),
         "earnings": get_earnings_history(symbol),
         "peers": get_peers(symbol),
     }
+    logger.debug("finnhub bundle built symbol=%s insider=%d earnings=%d peers=%d",
+                 symbol, len(bundle["insider"]), len(bundle["earnings"]), len(bundle["peers"]))
+    return bundle
 
 
 def _norm_market(n: dict) -> dict:

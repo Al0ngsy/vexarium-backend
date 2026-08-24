@@ -16,12 +16,13 @@ New indicators can be registered without touching existing code::
 """
 from __future__ import annotations
 
-import logging
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 import pandas as pd
+
+from ..logging import get_logger
 
 # pandas-ta-remake ships as the `pandas_ta_remake` import package but also
 # exposes a `pandas_ta` alias on some builds. Handle both gracefully.
@@ -35,7 +36,7 @@ except ImportError:  # pragma: no cover - fallback path
             "No pandas-ta package found. Install pandas-ta-remake."
         ) from exc
 
-logger = logging.getLogger(__name__)
+logger = get_logger("indicators")
 
 # pandas-ta-remake assigns float arrays into int64 columns internally (e.g.
 # MFI's tdf), which pandas >= 2.3 flags as incompatible-dtype FutureWarning.
@@ -82,16 +83,19 @@ class Indicator:
     def evaluate(self, df: pd.DataFrame) -> IndicatorResult:
         """Run compute + verdict with edge-case handling."""
         if len(df) < self.min_rows:
+            logger.warning("indicator skipped name=%s reason=insufficient_data rows=%d min_rows=%d",
+                           self.name, len(df), self.min_rows)
             return IndicatorResult(
                 name=self.name,
                 value=None,
                 verdict="none",
                 note=f"insufficient data: have {len(df)} rows, need {self.min_rows}",
             )
+        logger.debug("indicator evaluate name=%s rows=%d", self.name, len(df))
         try:
             value = self.compute(df)
         except Exception as exc:  # noqa: BLE001 - log and skip
-            logger.error("Indicator %s compute failed: %s", self.name, exc)
+            logger.exception("indicator compute failed name=%s", self.name)
             return IndicatorResult(
                 name=self.name,
                 value=None,
@@ -108,8 +112,9 @@ class Indicator:
         try:
             verdict = self.verdict(value)
         except Exception as exc:  # noqa: BLE001
-            logger.error("Indicator %s verdict failed: %s", self.name, exc)
+            logger.exception("indicator verdict failed name=%s", self.name)
             verdict = "none"
+        logger.debug("indicator result name=%s verdict=%s", self.name, verdict)
         return IndicatorResult(
             name=self.name,
             value=value,
@@ -133,7 +138,7 @@ class IndicatorEngine:
     def register(self, indicator: Indicator) -> None:
         """Add (or replace) an indicator in the registry."""
         self._registry[indicator.name] = indicator
-        logger.debug("Registered indicator: %s", indicator.name)
+        logger.debug("indicator registered name=%s", indicator.name)
 
     @property
     def indicators(self) -> dict[str, Indicator]:
@@ -148,11 +153,12 @@ class IndicatorEngine:
         whole batch.
         """
         results: list[IndicatorResult] = []
+        logger.debug("indicator batch start indicators=%d rows=%d", len(self._registry), len(df))
         for name, indicator in self._registry.items():
             try:
                 results.append(indicator.evaluate(df))
             except Exception as exc:  # noqa: BLE001 - ultimate safety net
-                logger.error("Indicator %s failed during evaluate: %s", name, exc)
+                logger.exception("indicator failed during evaluate name=%s", name)
                 results.append(
                     IndicatorResult(
                         name=name,
@@ -161,6 +167,7 @@ class IndicatorEngine:
                         note=f"evaluate error: {exc}",
                     )
                 )
+        logger.debug("indicator batch done computed=%d", len(results))
         return results
 
 

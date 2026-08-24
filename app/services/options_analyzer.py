@@ -2,6 +2,11 @@ from datetime import datetime, date, timedelta
 from math import log, sqrt, exp, erf
 from typing import Optional
 
+from ..logging import get_logger
+
+logger = get_logger("options")
+
+
 def _norm_cdf(x: float) -> float:
     """Standard normal CDF via the error function."""
     return 0.5 * (1 + erf(x / sqrt(2)))
@@ -39,6 +44,9 @@ def prob_profit(strike: float, premium: float, current_price: float,
         # Expected value: option value at current price (theoretical) minus premium.
         theo = black_scholes_price(strike, current_price, days_to_expiry,
                                    implied_vol, risk_free, is_call=is_call)
+        logger.debug("prob_profit computed strike=%s premium=%s dte=%s iv=%s call=%s prob_itm=%s prob_profit=%s",
+                     strike, premium, days_to_expiry, implied_vol, is_call,
+                     round(prob_itm, 4), round(prob_profit, 4))
         return {
             "prob_itm": round(prob_itm, 4),
             "prob_profit": round(prob_profit, 4),
@@ -46,6 +54,8 @@ def prob_profit(strike: float, premium: float, current_price: float,
             "breakeven": round(breakeven, 2),
         }
     except (ValueError, ZeroDivisionError, OverflowError):
+        logger.debug("prob_profit invalid inputs strike=%s premium=%s dte=%s iv=%s (zeros returned)",
+                     strike, premium, days_to_expiry, implied_vol)
         return {
             "prob_itm": 0.0,
             "prob_profit": 0.0,
@@ -96,6 +106,8 @@ def option_value_at_price(strike: float, premium: float, current_price: float,
     est = black_scholes_price(strike, target_price, days, implied_vol, is_call=is_call)
     pl = est - premium
     pl_pct = (pl / premium) if premium > 0 else 0.0
+    logger.debug("option value_at_price target=%s dte=%s est=%s pl=%s",
+                 target_price, days, round(est, 2), round(pl, 2))
     return {
         "target_price": round(target_price, 2),
         "target_date": ref.isoformat(),
@@ -148,6 +160,8 @@ def build_payoff_matrix(strike, premium, current_price, expiry_date, implied_vol
                 "pl_pct": val["pl_pct"],
             })
         rows.append(row)
+    logger.debug("payoff matrix built strikes=%d expiries=%d range_pct=%s quantity=%d",
+                 len(strikes), len(expiries), range_pct, quantity)
     return {
         "strikes": rows,
         "expiries": expiries,
@@ -181,6 +195,7 @@ def build_payoff_timeline(strike: float, premium: float, current_price: float,
     today = date.today()
     days_to_expiry = (expiry - today).days
     if days_to_expiry <= 0:
+        logger.debug("payoff timeline skipped (already expired)")
         return []
     timeline = []
     for d in range(days_to_expiry + 1):
@@ -199,4 +214,5 @@ def build_payoff_timeline(strike: float, premium: float, current_price: float,
             "estimated_pl": round(estimated_pl, 2),
             "pl_pct": round(pl_pct, 4),
         })
+    logger.debug("payoff timeline built points=%d", len(timeline))
     return timeline

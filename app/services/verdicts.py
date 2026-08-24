@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..logging import get_logger
+
+logger = get_logger("verdicts")
+
 VERDICT_SCORES: dict[str, int] = {
     "strong_buy": 2,
     "buy": 1,
@@ -64,6 +68,7 @@ def aggregate(indicator_results: list[Any]) -> dict:
     """
     computed = [r for r in indicator_results if _extract(r)[1] != "none"]
     if not computed:
+        logger.debug("aggregate all indicators none (verdict=hold score=0)")
         return {
             "overall_verdict": "hold",
             "score": 0,
@@ -79,8 +84,11 @@ def aggregate(indicator_results: list[Any]) -> dict:
         total += score
         breakdown.append({"name": name, "verdict": verdict})
 
+    verdict = _score_bucket(total)
+    logger.info("aggregate done verdict=%s score=%d indicators=%d excluded_none=%d",
+                verdict, total, len(computed), len(indicator_results) - len(computed))
     return {
-        "overall_verdict": _score_bucket(total),
+        "overall_verdict": verdict,
         "score": total,
         "breakdown": breakdown,
         "indicator_count": len(computed),

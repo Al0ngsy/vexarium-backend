@@ -2,7 +2,12 @@ POSITIVE_WORDS = {"beat", "surge", "rally", "profit", "growth", "gain", "rise", 
 NEGATIVE_WORDS = {"miss", "drop", "decline", "loss", "fall", "down", "bearish", "downgrade", "weak", "low", "plunge", "crash", "warning", "fear", "sell", "cut"}
 
 import difflib
+import time
 from datetime import datetime
+
+from ..logging import get_logger
+
+logger = get_logger("news")
 
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -47,6 +52,7 @@ def get_news_sentiment(articles: list) -> dict:
         summary = "Recent news sentiment is negative."
     else:
         summary = "Recent news sentiment is neutral."
+    logger.debug("news sentiment aggregated articles=%d score=%s", len(articles), round(avg, 3))
     return {
         "sentiment_score": round(avg, 3),
         "article_count": len(articles),
@@ -74,18 +80,26 @@ def fetch_news(client, symbol: str, limit: int = 10) -> tuple[dict, list]:
     deduped so one story over-reported by several sources can't skew either
     the list or the aggregate sentiment. Newest first. Never raises.
     """
+    t0 = time.monotonic()
     try:
+        logger.debug("news fetch start symbol=%s limit=%d", symbol, limit)
         articles = client.get_news(symbol, limit=limit)
         try:
             from .finnhub import get_company_news
 
             articles += get_company_news(symbol, limit=limit)
         except Exception:
-            pass  # extra source optional; base feed still works
+            logger.debug("finnhub company-news fallback failed symbol=%s", symbol)
         articles = sorted(dedupe_articles(articles), key=_ts, reverse=True)
         articles = cap_source(articles)
-        return get_news_sentiment(articles), add_article_scores(articles)
+        summary, scored = get_news_sentiment(articles), add_article_scores(articles)
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.info("news fetched symbol=%s articles=%d sentiment=%s duration_ms=%d",
+                    symbol, len(scored), summary.get("sentiment_score"), ms)
+        return summary, scored
     except Exception:
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.warning("news fetch failed symbol=%s duration_ms=%d (returning empty)", symbol, ms)
         return (
             {"sentiment_score": 0.0, "article_count": 0, "summary": "News unavailable."},
             [],
@@ -137,6 +151,7 @@ def dedupe_articles(articles: list, similar_ratio: float = 0.85) -> list:
                 break
         if not dup:
             out.append(a)
+    logger.debug("articles deduped in=%d out=%d", len(articles), len(out))
     return out
 
 
@@ -158,6 +173,7 @@ def cap_source(articles: list, max_per_source: int = 2) -> list:
             continue
         counts[s] = counts.get(s, 0) + 1
         out.append(a)
+    logger.debug("articles source-capped in=%d out=%d max_per_source=%d", len(articles), len(out), max_per_source)
     return out
 
 
