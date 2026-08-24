@@ -13,7 +13,7 @@ from ..services.ai_analyzer import build_prompt, analyze as llm_analyze
 from ..services.news_service import fetch_news
 from ..services.company_info import get_company_info
 from ..services.cache import (
-    cache_get, cache_set, ai_key, ai_lock_key, CACHE_TTL_AI,
+    cache_get, cache_set, ai_key, ai_lock_key, options_ai_key, CACHE_TTL_AI,
     lock_acquire, lock_held, lock_release,
 )
 from ..config import settings
@@ -258,23 +258,35 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
     #   if user_tier != "pro":
     #       raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access options AI.")
     from ..middleware.logging import get_request_id as _rid
+    tf = body.timeframe or "1d"
+    if tf not in ("1h", "1d", "1w", "1mo"):
+        tf = "1d"
+    key = options_ai_key(sym, strike, tf, body.strategy)
+    cached = await cache_get(key)
+    if cached:
+        return cached
     try:
-        prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy)
+        prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy, tf)
         logger.info(
-            "rid=%s options-strategies symbol=%s verdict=%s strike=%s strategy=%s contracts=%d indicators=%d",
-            _rid(request), sym, sentiment, strike, body.strategy or "-", n_chain, n_ind,
+            "rid=%s options-strategies symbol=%s verdict=%s strike=%s strategy=%s tf=%s contracts=%d indicators=%d",
+            _rid(request), sym, sentiment, strike, body.strategy or "-", tf, n_chain, n_ind,
         )
         text = await llm_analyze(prompt)
         logger.info(
             "rid=%s options-strategies symbol=%s llm_done chars=%d model=%s",
             _rid(request), sym, len(text or ""), settings.llm_model,
         )
-        return {
+        result = {
             "symbol": sym,
             "strategies": recs,
             "analysis": text,
             "model": settings.llm_model,
         }
+        # Cache only finished answers (the footer marker must be present), so a
+        # truncated or failed run never poisons the cache.
+        if text and "not financial advice" in text.lower() and "temporarily unavailable" not in text.lower():
+            await cache_set(key, result, ttl=CACHE_TTL_AI)
+        return result
     except Exception:
         logger.exception(
             "rid=%s options-strategies symbol=%s FAILED", _rid(request), sym
@@ -293,16 +305,41 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
 
     sym = validate_symbol(body.symbol)
     strike = body.strike or 0.0
+    tf = body.timeframe or "1d"
+    if tf not in ("1h", "1d", "1w", "1mo"):
+        tf = "1d"
+    key = options_ai_key(sym, strike, tf, body.strategy)
+
+    async def _replay(text: str):
+        for i in range(0, len(text), 24):
+            yield "data: " + json.dumps({"chunk": text[i:i + 24]}) + "\n\n"
+            await asyncio.sleep(0.03)
 
     async def event_generator():
         try:
-            prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy)
+            cached = await cache_get(key)
+            if cached:
+                async for ev in _replay(cached["analysis"]):
+                    yield ev
+                yield "data: " + json.dumps({"done": True}) + "\n\n"
+                return
+            prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy, tf)
             logger.info(
-                "rid=%s options-strategies-stream symbol=%s verdict=%s strike=%s strategy=%s contracts=%d indicators=%d",
-                _rid(request), sym, sentiment, strike, body.strategy or "-", n_chain, n_ind,
+                "rid=%s options-strategies-stream symbol=%s verdict=%s strike=%s strategy=%s tf=%s contracts=%d indicators=%d",
+                _rid(request), sym, sentiment, strike, body.strategy or "-", tf, n_chain, n_ind,
             )
+            parts = []
             async for token in analyze_stream(prompt):
+                parts.append(token)
                 yield "data: " + json.dumps({"chunk": token}) + "\n\n"
+            full = "".join(parts)
+            if full and "not financial advice" in full.lower() and "temporarily unavailable" not in full.lower():
+                await cache_set(key, {
+                    "symbol": sym,
+                    "strategies": recs,
+                    "analysis": full,
+                    "model": settings.llm_model,
+                }, ttl=CACHE_TTL_AI)
             yield "data: " + json.dumps({"done": True}) + "\n\n"
         except Exception:
             logger.exception("rid=%s options-strategies-stream FAILED", _rid(request))
@@ -320,10 +357,11 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
     )
 
 
-async def _prepare_options_explanation(sym: str, strike: float, strategy: str | None):
+async def _prepare_options_explanation(sym: str, strike: float, strategy: str | None, tf: str = "1d"):
     """Shared by the regular and streaming options-strategies endpoints: builds
     the strategy recommendations and the LLM prompt (same footer and heading
-    format as the stock AI briefing)."""
+    format as the stock AI briefing). `tf` matches the verdict timeframe the
+    user is looking at (1h/1d/1w/1mo)."""
     client = AlpacaClient()
     from ..services.strategy_engine import recommend_strategies
     from datetime import date, timedelta
@@ -342,12 +380,17 @@ async def _prepare_options_explanation(sym: str, strike: float, strategy: str | 
         ask = float(c.get('ask', 0) or 0)
         last = float(c.get('last_price', 0) or 0)
         mid = ((bid + ask) / 2) if (bid and ask) else (last or bid or ask)
+        if mid <= 0:
+            continue  # same rule as /strategies: zero-quote rows poison spreads
         chain.append({
             'strike_price': float(c.get('strike_price', 0)),
             'type': raw_type,
             'last_price': mid,
+            'expiration_date': c.get('expiration_date'),
         })
-    df = client.get_stock_bars(sym)
+    df = client.get_stock_bars(sym, timeframe=tf)
+    if df.empty and tf != '1d':
+        df = client.get_stock_bars(sym)  # intraday miss -> daily fallback
     indicator_results = []
     if not df.empty:
         indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]

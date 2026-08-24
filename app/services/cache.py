@@ -187,6 +187,12 @@ def ai_key(symbol: str, timeframe: str = "1d") -> str:
     return f"ai:{symbol}:{timeframe}:{date.today().isoformat()}"
 
 
+def options_ai_key(symbol: str, strike: float, timeframe: str, strategy: str | None = None) -> str:
+    """Options-strategies AI explanation, keyed by everything that changes the
+    answer: symbol, strike, verdict timeframe, and the explored strategy."""
+    return f"options-ai:{symbol}:{strike}:{timeframe}:{strategy or 'all'}"
+
+
 def ai_lock_key(symbol: str, timeframe: str = "1d") -> str:
     """Single-flight lock so concurrent AI requests for the same symbol wait
     for the in-flight LLM call instead of firing duplicate ones."""
