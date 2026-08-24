@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
     database_url: str = ""
 
+    # --- Logging ---
+    # debug, verbose (alias for debug), info, warning, error, critical.
+    log_level: str = "info"
+
     # --- Stripe ---
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""

@@ -1,7 +1,6 @@
 """VEXARIUM FastAPI application entrypoint."""
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -21,10 +20,11 @@ from app.api.stream import router as stream_router
 from app.api.strategies import router as strategies_router
 from app.api.trades import router as trades_router
 from app.config import settings
+from app.logging import configure_logging
 from app.middleware.logging import request_logging_middleware
 from app.middleware.rate_limit import limiter
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+configure_logging(settings.log_level)
 
 
 @asynccontextmanager
