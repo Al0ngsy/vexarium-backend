@@ -142,6 +142,9 @@ CACHE_TTL_BARS = 6 * 3600      # daily bars change once per day
 CACHE_TTL_QUOTE = 5            # seconds during market hours
 CACHE_TTL_NEWS = 30 * 60       # 30 min
 CACHE_TTL_AI = 24 * 3600       # AI analysis per symbol per day
+# Options AI explanations are educational and keyed by the technical verdict,
+# so they stay valid longer than the stock briefing (48h) — saves LLM quota.
+CACHE_TTL_AI_OPTIONS = 48 * 3600
 CACHE_TTL_ANALYSIS = 24 * 3600 # computed analysis per symbol per day
 CACHE_TTL_FINNHUB = 12 * 3600  # insider filings / earnings / peers change slowly
 CACHE_TTL_OPTION_CHAIN = 15    # indicative/delayed options quotes; short TTL
@@ -187,10 +190,17 @@ def ai_key(symbol: str, timeframe: str = "1d") -> str:
     return f"ai:{symbol}:{timeframe}:{date.today().isoformat()}"
 
 
-def options_ai_key(symbol: str, strike: float, timeframe: str, strategy: str | None = None) -> str:
+def options_ai_key(symbol: str, strike: float, timeframe: str, strategy: str | None = None, sentiment: str | None = None) -> str:
     """Options-strategies AI explanation, keyed by everything that changes the
-    answer: symbol, strike, verdict timeframe, and the explored strategy."""
-    return f"options-ai:{symbol}:{strike}:{timeframe}:{strategy or 'all'}"
+    answer: symbol, strike, verdict timeframe, the explored strategy, and the
+    verdict itself. Keying on the verdict is what makes a 48h TTL valid: if
+    the verdict flips, the key changes and the cache misses."""
+    return f"options-ai:{symbol}:{strike}:{timeframe}:{strategy or 'all'}:{sentiment or 'unknown'}"
+
+
+def options_ai_lock_key(symbol: str, strike: float, timeframe: str, strategy: str | None = None, sentiment: str | None = None) -> str:
+    """Single-flight lock so concurrent identical questions share one LLM call."""
+    return "lock:" + options_ai_key(symbol, strike, timeframe, strategy, sentiment)
 
 
 def ai_lock_key(symbol: str, timeframe: str = "1d") -> str:
