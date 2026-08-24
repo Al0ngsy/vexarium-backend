@@ -18,4 +18,5 @@ class StrategyCard(BaseModel):
 class StrategiesResponse(BaseModel):
     symbol: str
     sentiment: str
+    timeframe: str = '1d'
     strategies: list[StrategyCard]

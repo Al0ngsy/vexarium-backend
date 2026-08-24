@@ -24,13 +24,16 @@ def _card_dict(r: dict) -> dict:
 
 @router.get("/{symbol}/strategies", response_model=StrategiesResponse)
 @limiter.limit(f"{settings.rate_limit_free}/minute")
-async def get_strategies(request: Request, symbol: str, sentiment: str = Query('neutral'), strike: float = Query(...), expiration_gte: str = Query(...), expiration_lte: str = Query(...), dte: Optional[float] = Query(None)):
+async def get_strategies(request: Request, symbol: str, sentiment: str = Query('neutral'), strike: float = Query(...), expiration_gte: str = Query(...), expiration_lte: str = Query(...), dte: Optional[float] = Query(None), timeframe: Optional[str] = Query(None)):
     try:
         sym = validate_symbol(symbol)
         client = AlpacaClient()
         # Verdict horizon follows the contract's days-to-expiry (1h/1d/1w/1mo)
         # so a 90-day contract is not judged by a 1-day momentum snapshot.
-        tf = timeframe_for_dte(dte)
+        # An explicit `timeframe` overrides the DTE-matched default.
+        tf = timeframe or timeframe_for_dte(dte)
+        if tf not in ('1h', '1d', '1w', '1mo'):
+            raise HTTPException(status_code=422, detail=f"unsupported timeframe: {tf}")
         key = strategies_key(sym, strike, expiration_gte, expiration_lte, tf)
         payload = run_coro(cache_get(key))
         if payload is None:
@@ -74,12 +77,14 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
             payload = {
                 'symbol': sym,
                 'sentiment': sentiment,
+                'timeframe': tf,
                 'strategies': [_card_dict(r) for r in recs],
             }
             run_coro(cache_set(key, payload, ttl=CACHE_TTL_OPTION_CHAIN))
         return StrategiesResponse(
             symbol=payload['symbol'],
             sentiment=payload['sentiment'],
+            timeframe=payload.get('timeframe', '1d'),
             strategies=[
                 StrategyCard(
                     name=c['name'], subtitle=c['subtitle'], is_bullish=c['is_bullish'],
