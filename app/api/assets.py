@@ -1,10 +1,11 @@
-import logging
 import re
 
 import httpx
 from fastapi import APIRouter, Request, Query
 
 from ..config import settings
+from ..logging import get_logger
+from ..middleware.logging import get_request_id as _rid
 from ..middleware.rate_limit import limiter
 from ..services.company_info import (
     _HEADERS,
@@ -14,7 +15,7 @@ from ..services.company_info import (
 )
 
 router = APIRouter(prefix="/assets", tags=["assets"])
-logger = logging.getLogger("vexarium.api.assets")
+logger = get_logger("assets")
 
 _assets_cache: list[dict] = []
 _assets_loaded = False
@@ -79,6 +80,7 @@ def _load_assets():
             for a in assets
         ]
         _assets_loaded = True
+        logger.debug("assets universe loaded count=%d", len(_assets_cache))
     except Exception:
         logger.error("Failed to load assets", exc_info=True)
 
@@ -159,8 +161,10 @@ def _wkn_search(q: str, limit: int = 4) -> list[dict]:
 async def search_assets(request: Request, q: str = Query("", max_length=60)):
     q_raw = q.strip()
     if not q_raw:
+        logger.debug("rid=%s assets search q=<empty> done results=0", _rid(request))
         return {"assets": []}
     q = q_raw.upper()
+    logger.info("rid=%s assets search q=%s", _rid(request), q)
     _load_assets()
     results = []
     seen = set()
@@ -173,6 +177,7 @@ async def search_assets(request: Request, q: str = Query("", max_length=60)):
         results.append(a)
 
     # 1. Exact symbol match always surfaces first (Alpaca, then Yahoo).
+    n_before = len(results)
     for a in _assets_cache:
         if a["symbol"].upper() == q:
             _add(a)
@@ -181,14 +186,18 @@ async def search_assets(request: Request, q: str = Query("", max_length=60)):
     for a in yahoo:
         if a["symbol"].upper() == q:
             _add(a)
+    logger.debug("rid=%s assets search q=%s stage=exact matches=%d yahoo=%d", _rid(request), q, len(results) - n_before, len(yahoo))
 
     # 2. Yahoo results next — relevance-ordered by Yahoo, so the primary
     #    listing of a foreign company (RHM.DE / XETRA) ranks above the OTC ADR
     #    (RNMBY) that only Alpaca knows. "Rheinmetall" -> RHM.DE, then RNMBY.
+    n_before = len(results)
     for a in yahoo:
         _add(a)
+    logger.debug("rid=%s assets search q=%s stage=yahoo matches=%d", _rid(request), q, len(results) - n_before)
 
     # 3. Alpaca symbol prefix matches.
+    n_before = len(results)
     for a in _assets_cache:
         if len(results) >= 20:
             break
@@ -202,10 +211,13 @@ async def search_assets(request: Request, q: str = Query("", max_length=60)):
                 break
             if q_lower in a["name"].lower():
                 _add(a)
+    logger.debug("rid=%s assets search q=%s stage=alpaca matches=%d", _rid(request), q, len(results) - n_before)
     # 5. German WKN fallback (A1JX52, ETF146, …) — Yahoo doesn't index WKNs;
     #    only try when nothing else matched so a 6-char US ticker is never
     #    misrouted through the WKN path.
     if not results and re.fullmatch(r"[A-Z0-9]{5,6}", q):
         for a in _wkn_search(q):
             _add(a)
+        logger.debug("rid=%s assets search q=%s stage=wkn matches=%d", _rid(request), q, len(results))
+    logger.info("rid=%s assets search q=%s done results=%d", _rid(request), q, len(results[:20]))
     return {"assets": results[:20]}

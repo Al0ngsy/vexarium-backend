@@ -18,10 +18,11 @@ from ..services.cache import (
     lock_acquire, lock_held, lock_release,
 )
 from ..config import settings
-import logging
+from ..logging import get_logger
+from ..middleware.logging import get_request_id as _rid
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
-logger = logging.getLogger("vexarium.api.ai")
+logger = get_logger("ai")
 
 
 async def _ai_access(request: Request, body: AnalysisRequest) -> str:
@@ -87,6 +88,10 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
 
     try:
         cached = await _cached_or_none()
+        logger.info(
+            "rid=%s ai symbol=%s tf=%s cache=%s",
+            _rid(request), sym, tf, "hit" if cached else "miss",
+        )
         if cached:
             return cached
 
@@ -96,6 +101,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
         # duplicate 50-90s LLM call.
         lock_key = ai_lock_key(sym, tf)
         if not await lock_acquire(lock_key, ttl=180):
+            logger.info("rid=%s ai symbol=%s lock busy — waiting for in-flight generation", _rid(request), sym)
             # Someone else is generating — poll for the result (up to ~2 min).
             waited = 0
             while waited < 120:
@@ -103,6 +109,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
                 waited += 2
                 cached = await _cached_or_none()
                 if cached:
+                    logger.info("rid=%s ai symbol=%s got in-flight result after %ds wait", _rid(request), sym, waited)
                     return cached
                 if not await lock_held(lock_key):
                     # Lock released without a cached result -> the generator
@@ -112,9 +119,12 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
                 # Lock is free now (or the wait timed out): take over.
                 if not await lock_acquire(lock_key, ttl=180):
                     return {"symbol": sym, "analysis": "AI analysis in progress. Please retry in a moment.", "model": settings.llm_model}
+                logger.info("rid=%s ai symbol=%s took over after %ds lock wait", _rid(request), sym, waited)
 
         _, _, _, news, articles, market_data, _, prompt = _build_context(sym, tf)
+        logger.info("rid=%s ai symbol=%s llm_start", _rid(request), sym)
         text = await llm_analyze(prompt)
+        logger.info("rid=%s ai symbol=%s llm_done chars=%d model=%s", _rid(request), sym, len(text or ""), settings.llm_model)
         # Never cache failure text: a transient LLM outage must not poison the
         # 24h per-symbol cache (the fallback would be served to every user all
         # day even after the provider recovers).
@@ -128,6 +138,7 @@ async def ai_analysis(request: Request, body: AnalysisRequest, user_tier: str = 
             return _make_result(sym, text, news, articles, market_data)
         result = _make_result(sym, text, news, articles, market_data)
         await cache_set(ai_key(sym, tf), result, ttl=CACHE_TTL_AI)
+        logger.debug("rid=%s ai symbol=%s cached key=%s ttl=%s", _rid(request), sym, ai_key(sym, tf), CACHE_TTL_AI)
         return result
     except ValueError as e:
         return {"symbol": sym, "analysis": str(e), "model": settings.llm_model}
@@ -168,7 +179,12 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
     async def event_generator():
         try:
             cached = await _cached_or_none()
+            logger.info(
+                "rid=%s ai-stream symbol=%s tf=%s cache=%s",
+                _rid(request), sym, tf, "hit" if cached else "miss",
+            )
             if cached:
+                logger.info("rid=%s ai-stream symbol=%s replaying cached answer", _rid(request), sym)
                 async for ev in _stream_text(cached["analysis"]):
                     yield ev
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
@@ -178,12 +194,14 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
             lock_key = ai_lock_key(sym, tf)
             acquired = await lock_acquire(lock_key, ttl=180)
             if not acquired:
+                logger.info("rid=%s ai-stream symbol=%s lock busy — waiting for in-flight generation", _rid(request), sym)
                 waited = 0
                 while waited < 120:
                     await asyncio.sleep(2)
                     waited += 2
                     cached = await _cached_or_none()
                     if cached:
+                        logger.info("rid=%s ai-stream symbol=%s got in-flight result after %ds wait", _rid(request), sym, waited)
                         async for ev in _stream_text(cached["analysis"]):
                             yield ev
                         yield "data: " + json.dumps({"done": True}) + "\n\n"
@@ -194,9 +212,11 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
                     yield "data: " + json.dumps({"chunk": "AI analysis in progress. Please retry in a moment."}) + "\n\n"
                     yield "data: " + json.dumps({"done": True}) + "\n\n"
                     return
+                logger.info("rid=%s ai-stream symbol=%s took over after %ds lock wait", _rid(request), sym, waited)
 
             _, _, _, news, articles, market_data, _, prompt = _build_context(sym, tf)
             parts = []
+            logger.info("rid=%s ai-stream symbol=%s llm_start", _rid(request), sym)
             try:
                 async for token in analyze_stream(prompt):
                     parts.append(token)
@@ -209,6 +229,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
                 return
             text = "".join(parts)
+            logger.info("rid=%s ai-stream symbol=%s llm_done chars=%d model=%s", _rid(request), sym, len(text or ""), settings.llm_model)
             if not text or text.startswith("AI analysis"):
                 yield "data: " + json.dumps({"chunk": "AI analysis unavailable. Review the technical indicators manually or come back later."}) + "\n\n"
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
@@ -232,6 +253,7 @@ async def ai_analysis_stream(request: Request, body: AnalysisRequest, user_tier:
             yield "data: " + json.dumps({"done": True}) + "\n\n"
         finally:
             await lock_release(ai_lock_key(sym, tf))
+            logger.info("rid=%s ai-stream symbol=%s SSE closed", _rid(request), sym)
 
     return StreamingResponse(
         event_generator(),
@@ -258,7 +280,6 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
     # DEV: Pro gate removed during development; re-add before launch:
     #   if user_tier != "pro":
     #       raise HTTPException(status_code=403, detail="Requires pro tier. Upgrade to access options AI.")
-    from ..middleware.logging import get_request_id as _rid
     tf = body.timeframe or "1d"
     if tf not in ("1h", "1d", "1w", "1mo"):
         tf = "1d"
@@ -267,12 +288,17 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
     sentiment, _ = await _options_verdict(sym, tf)
     key = options_ai_key(sym, strike, tf, body.strategy, sentiment)
     cached = await cache_get(key)
+    logger.info(
+        "rid=%s options-strategies symbol=%s strike=%s tf=%s cache=%s",
+        _rid(request), sym, strike, tf, "hit" if cached else "miss",
+    )
     if cached:
         return cached
     lock_key = options_ai_lock_key(sym, strike, tf, body.strategy, sentiment)
     try:
         # Single-flight: concurrent identical questions share one LLM call.
         if not await lock_acquire(lock_key, ttl=180):
+            logger.info("rid=%s options-strategies symbol=%s lock busy — waiting for in-flight generation", _rid(request), sym)
             waited = 0
             while waited < 120:
                 await asyncio.sleep(2)
@@ -285,11 +311,13 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
             if not cached and not await lock_acquire(lock_key, ttl=180):
                 return {"symbol": sym, "analysis": "AI analysis in progress. Please retry in a moment.",
                         "strategies": [], "model": settings.llm_model}
+            logger.info("rid=%s options-strategies symbol=%s took over after %ds lock wait", _rid(request), sym, waited)
         prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy, tf)
         logger.info(
             "rid=%s options-strategies symbol=%s verdict=%s strike=%s strategy=%s tf=%s contracts=%d indicators=%d",
             _rid(request), sym, sentiment, strike, body.strategy or "-", tf, n_chain, n_ind,
         )
+        logger.info("rid=%s options-strategies symbol=%s llm_start", _rid(request), sym)
         text = await llm_analyze(prompt)
         logger.info(
             "rid=%s options-strategies symbol=%s llm_done chars=%d model=%s",
@@ -305,6 +333,7 @@ async def ai_options_strategies(request: Request, body: AnalysisRequest, user_ti
         # truncated or failed run never poisons the cache.
         if text and "not financial advice" in text.lower() and "temporarily unavailable" not in text.lower():
             await cache_set(key, result, ttl=CACHE_TTL_AI_OPTIONS)
+        logger.debug("rid=%s options-strategies symbol=%s cache=%s key=%s", _rid(request), sym, "stored" if text and "not financial advice" in (text or "").lower() else "skipped", key)
         return result
     except Exception:
         logger.exception(
@@ -322,7 +351,6 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
     /analysis/ai/stream: data {"chunk": ...} then data {"done": true})."""
     from fastapi.responses import StreamingResponse
     from ..services.ai_analyzer import analyze_stream
-    from ..middleware.logging import get_request_id as _rid
 
     sym = validate_symbol(body.symbol)
     strike = body.strike or 0.0
@@ -341,7 +369,12 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
     async def event_generator():
         try:
             cached = await cache_get(key)
+            logger.info(
+                "rid=%s options-strategies-stream symbol=%s strike=%s tf=%s cache=%s",
+                _rid(request), sym, strike, tf, "hit" if cached else "miss",
+            )
             if cached:
+                logger.info("rid=%s options-strategies-stream symbol=%s replaying cached answer", _rid(request), sym)
                 async for ev in _replay(cached["analysis"]):
                     yield ev
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
@@ -349,6 +382,7 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
             # Single-flight: wait for an in-flight identical question instead
             # of paying for a second LLM call.
             if not await lock_acquire(lock_key, ttl=180):
+                logger.info("rid=%s options-strategies-stream symbol=%s lock busy — waiting for in-flight generation", _rid(request), sym)
                 waited = 0
                 while waited < 120:
                     await asyncio.sleep(2)
@@ -365,16 +399,19 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
                     yield "data: " + json.dumps({"chunk": "AI analysis in progress. Please retry in a moment."}) + "\n\n"
                     yield "data: " + json.dumps({"done": True}) + "\n\n"
                     return
+                logger.info("rid=%s options-strategies-stream symbol=%s took over after %ds lock wait", _rid(request), sym, waited)
             prompt, recs, sentiment, n_chain, n_ind = await _prepare_options_explanation(sym, strike, body.strategy, tf)
             logger.info(
                 "rid=%s options-strategies-stream symbol=%s verdict=%s strike=%s strategy=%s tf=%s contracts=%d indicators=%d",
                 _rid(request), sym, sentiment, strike, body.strategy or "-", tf, n_chain, n_ind,
             )
+            logger.info("rid=%s options-strategies-stream symbol=%s llm_start", _rid(request), sym)
             parts = []
             async for token in analyze_stream(prompt):
                 parts.append(token)
                 yield "data: " + json.dumps({"chunk": token}) + "\n\n"
             full = "".join(parts)
+            logger.info("rid=%s options-strategies-stream symbol=%s llm_done chars=%d model=%s", _rid(request), sym, len(full or ""), settings.llm_model)
             if full and "not financial advice" in full.lower() and "temporarily unavailable" not in full.lower():
                 await cache_set(key, {
                     "symbol": sym,
@@ -382,6 +419,7 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
                     "analysis": full,
                     "model": settings.llm_model,
                 }, ttl=CACHE_TTL_AI_OPTIONS)
+                logger.debug("rid=%s options-strategies-stream symbol=%s cached key=%s", _rid(request), sym, key)
             yield "data: " + json.dumps({"done": True}) + "\n\n"
         except Exception:
             logger.exception("rid=%s options-strategies-stream FAILED", _rid(request))
@@ -389,6 +427,7 @@ async def ai_options_strategies_stream(request: Request, body: AnalysisRequest, 
             yield "data: " + json.dumps({"done": True}) + "\n\n"
         finally:
             await lock_release(lock_key)
+            logger.info("rid=%s options-strategies-stream symbol=%s SSE closed", _rid(request), sym)
 
     return StreamingResponse(
         event_generator(),
@@ -446,6 +485,7 @@ async def _prepare_options_explanation(sym: str, strike: float, strategy: str | 
             'last_price': mid,
             'expiration_date': c.get('expiration_date'),
         })
+    logger.debug("options chain symbol=%s raw=%d usable=%d", sym, len(contracts), len(chain))
     sentiment, indicator_results = await _options_verdict(sym, tf)
     recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
     footer = (

@@ -4,13 +4,16 @@ import json
 from fastapi import APIRouter, Response
 
 from ..config import settings
+from ..logging import get_logger
 
 router = APIRouter()
+logger = get_logger("health")
 
 
 @router.get("/")
 async def health() -> dict[str, str]:
     """Liveness probe."""
+    logger.debug("health ok")
     return {"status": "ok"}
 
 
@@ -46,6 +49,9 @@ async def ready():
         except Exception:
             deps["database"] = "down"
     all_ok = all(v == "ok" for v in deps.values())
+    logger.info("ready redis=%s database=%s status=%s", deps.get("redis"), deps.get("database"), "ok" if all_ok else "degraded")
+    if not all_ok:
+        logger.warning("ready degraded: %s", {k: v for k, v in deps.items() if v != "ok"})
     return Response(
         content=json.dumps(
             {"status": "ok" if all_ok else "degraded", "dependencies": deps}

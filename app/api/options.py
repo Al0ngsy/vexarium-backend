@@ -17,8 +17,11 @@ from ..services.options_analyzer import (
     prob_profit,
 )
 from ..config import settings
+from ..logging import get_logger
+from ..middleware.logging import get_request_id as _rid
 
 router = APIRouter(prefix="/options", tags=["options"])
+logger = get_logger("options")
 
 
 def _parse_occ(contract_symbol: str) -> tuple[float, str, bool]:
@@ -48,8 +51,13 @@ async def get_option_chain(
     (DTE, intrinsic/time/theoretical value, spread, distance %) are computed
     server-side from the underlying price + Black-Scholes.
     """
+    sym = None
     try:
         sym = validate_symbol(symbol)
+        logger.info(
+            "rid=%s options-chain symbol=%s exp=%s..%s type=%s max_expiries=%d",
+            _rid(request), sym, expiration_gte, expiration_lte, contract_type or "-", max_expiries,
+        )
         client = AlpacaClient()
         # Center the chain on the current underlying price so the picker shows
         # strikes around it.
@@ -86,6 +94,7 @@ async def get_option_chain(
         expiries = sorted({c["expiration_date"] for c in contracts if c.get("expiration_date") and c.get("expiration_date") != today_iso})
         picked = AlpacaClient._spread_expiries(expiries, max_expiries)
         picked_set = set(picked)
+        logger.debug("rid=%s options-chain symbol=%s raw_contracts=%d expiries=%d picked=%d", _rid(request), sym, len(contracts), len(expiries), len(picked))
 
         schema_contracts = []
         for c in contracts:
@@ -138,6 +147,7 @@ async def get_option_chain(
                 spread=round(spread, 2),
                 distance_pct=round(distance_pct, 2),
             ))
+        logger.info("rid=%s options-chain symbol=%s done contracts=%d price=%s", _rid(request), sym, len(schema_contracts), round(float(current_price), 2) if current_price else "-")
         return OptionsChainResponse(
             symbol=sym,
             current_price=round(float(current_price), 2) if current_price else None,
@@ -146,6 +156,7 @@ async def get_option_chain(
             contracts=schema_contracts,
         )
     except AlpacaError as e:
+        logger.warning("rid=%s options-chain symbol=%s alpaca_error=%s → 502", _rid(request), sym, e)
         raise HTTPException(status_code=502, detail=str(e))
 
 
@@ -161,12 +172,15 @@ def _dte(expiry: str) -> int:
 @router.get("/{symbol}/payoff", response_model=OptionsPayoffResponse)
 @limiter.limit(f"{settings.rate_limit_free}/minute")
 async def get_option_payoff(request: Request, symbol: str, contract_symbol: str = Query(...)):
+    sym = None
     try:
         sym = validate_symbol(symbol)
         strike, expiry, is_call = _parse_occ(contract_symbol)
+        logger.info("rid=%s options-payoff symbol=%s contract=%s", _rid(request), sym, contract_symbol)
         client = AlpacaClient()
         snap = client.get_option_snapshot(contract_symbol)
         if not snap:
+            logger.warning("rid=%s options-payoff symbol=%s snapshot missing → 404", _rid(request), sym)
             raise HTTPException(status_code=404, detail=f"No snapshot for {contract_symbol}")
         greeks = snap.get("greeks", {})
         premium = snap.get("latest_trade_price", 0) or snap.get("ask", 0)
@@ -175,6 +189,7 @@ async def get_option_payoff(request: Request, symbol: str, contract_symbol: str 
         current_price = snap.get("latest_trade_price", premium)
         be = compute_breakeven(strike, premium, is_call)
         timeline = build_payoff_timeline(strike, premium, current_price, expiry, abs(theta), is_call)
+        logger.info("rid=%s options-payoff symbol=%s done premium=%s breakeven=%s rows=%d", _rid(request), sym, premium, be, len(timeline))
         return OptionsPayoffResponse(
             symbol=sym,
             greeks=GreeksSchema(**greeks),
@@ -184,8 +199,10 @@ async def get_option_payoff(request: Request, symbol: str, contract_symbol: str 
             payoff_timeline=[PayoffRow(**r) for r in timeline],
         )
     except ValueError:
+        logger.debug("rid=%s options symbol=%s invalid OCC → 422", _rid(request), sym)
         raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {contract_symbol}")
     except AlpacaError as e:
+        logger.warning("rid=%s options symbol=%s alpaca_error=%s → 502", _rid(request), sym, e)
         raise HTTPException(status_code=502, detail=str(e))
 
 
@@ -205,12 +222,15 @@ async def get_options_matrix(request: Request, symbol: str, body: MatrixRequest)
     expiry dates. Each cell is the projected P/L for holding to that expiry,
     priced via Black-Scholes.
     """
+    sym = None
     try:
         sym = validate_symbol(symbol)
         strike, expiry, is_call = _parse_occ(body.contract_symbol)
+        logger.info("rid=%s options-matrix symbol=%s contract=%s range_pct=%s qty=%d dates=%d", _rid(request), sym, body.contract_symbol, body.range_pct, body.quantity, body.dates)
         client = AlpacaClient()
         snap = client.get_option_snapshot(body.contract_symbol)
         if not snap:
+            logger.warning("rid=%s options-matrix symbol=%s snapshot missing → 404", _rid(request), sym)
             raise HTTPException(status_code=404, detail=f"No snapshot for {body.contract_symbol}")
         premium = snap.get("latest_trade_price", 0) or snap.get("ask", 0)
         iv = snap.get("implied_volatility", 0)
@@ -218,6 +238,7 @@ async def get_options_matrix(request: Request, symbol: str, body: MatrixRequest)
             quote = client.get_latest_quote(sym)
             current_price = quote.get("last_price") or quote.get("bid") or 0
         except Exception:
+            logger.warning("rid=%s options-matrix symbol=%s quote unavailable → fallback to strike=%s", _rid(request), sym, strike)
             current_price = strike  # fallback
         expiries = _matrix_date_columns(expiry, body.dates)
         matrix = build_payoff_matrix(
@@ -225,6 +246,7 @@ async def get_options_matrix(request: Request, symbol: str, body: MatrixRequest)
             expiry_date=expiry, implied_vol=iv, is_call=is_call,
             expiries=expiries, range_pct=body.range_pct, quantity=body.quantity,
         )
+        logger.info("rid=%s options-matrix symbol=%s done strikes=%d expiries=%d", _rid(request), sym, len(matrix["strikes"]), len(matrix["expiries"]))
         return OptionsMatrixResponse(
             symbol=sym,
             contract_symbol=body.contract_symbol,
@@ -236,8 +258,10 @@ async def get_options_matrix(request: Request, symbol: str, body: MatrixRequest)
             strikes=matrix["strikes"],
         )
     except ValueError:
+        logger.debug("rid=%s options-matrix symbol=%s invalid OCC → 422", _rid(request), sym)
         raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {body.contract_symbol}")
     except AlpacaError as e:
+        logger.warning("rid=%s options-matrix symbol=%s alpaca_error=%s → 502", _rid(request), sym, e)
         raise HTTPException(status_code=502, detail=str(e))
 
 
@@ -294,12 +318,15 @@ async def get_option_value_at_price(
     Uses Black-Scholes with the contract's implied volatility. Optionally pass
     target_date to see the value at a future date (after time decay).
     """
+    sym = None
     try:
         sym = validate_symbol(symbol)
         strike, expiry, is_call = _parse_occ(contract_symbol)
+        logger.info("rid=%s options-value symbol=%s contract=%s target_price=%s target_date=%s", _rid(request), sym, contract_symbol, target_price, target_date or "-")
         client = AlpacaClient()
         snap = client.get_option_snapshot(contract_symbol)
         if not snap:
+            logger.warning("rid=%s options-value symbol=%s snapshot missing → 404", _rid(request), sym)
             raise HTTPException(status_code=404, detail=f"No snapshot for {contract_symbol}")
         premium = snap.get("latest_trade_price", 0) or snap.get("ask", 0)
         iv = snap.get("implied_volatility", 0)
@@ -308,6 +335,7 @@ async def get_option_value_at_price(
             expiry_date=expiry, implied_vol=iv, is_call=is_call,
             target_price=target_price, target_date=target_date,
         )
+        logger.info("rid=%s options-value symbol=%s done est_price=%s pl_pct=%s", _rid(request), sym, val.get("estimated_option_price"), val.get("pl_pct"))
         return OptionValueAtPriceResponse(
             symbol=sym,
             contract_symbol=contract_symbol,
@@ -317,8 +345,10 @@ async def get_option_value_at_price(
             **val,
         )
     except ValueError:
+        logger.debug("rid=%s options symbol=%s invalid OCC → 422", _rid(request), sym)
         raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {contract_symbol}")
     except AlpacaError as e:
+        logger.warning("rid=%s options symbol=%s alpaca_error=%s → 502", _rid(request), sym, e)
         raise HTTPException(status_code=502, detail=str(e))
 
 
@@ -336,12 +366,15 @@ async def get_option_chance(
     Uses a Black-Scholes normal model with the contract's implied volatility.
     All values are estimates.
     """
+    sym = None
     try:
         sym = validate_symbol(symbol)
         strike, expiry, is_call = _parse_occ(contract_symbol)
+        logger.info("rid=%s options-chance symbol=%s contract=%s", _rid(request), sym, contract_symbol)
         client = AlpacaClient()
         snap = client.get_option_snapshot(contract_symbol)
         if not snap:
+            logger.warning("rid=%s options-chance symbol=%s snapshot missing → 404", _rid(request), sym)
             raise HTTPException(status_code=404, detail=f"No snapshot for {contract_symbol}")
         premium = snap.get("latest_trade_price", 0) or snap.get("ask", 0)
         iv = snap.get("implied_volatility", 0)
@@ -350,6 +383,7 @@ async def get_option_chance(
             quote = client.get_latest_quote(sym)
             current_price = quote.get("last_price") or quote.get("bid") or quote.get("ask")
         except Exception:
+            logger.warning("rid=%s options-chance symbol=%s quote unavailable → fallback to strike=%s", _rid(request), sym, strike)
             current_price = strike
         dte = _dte(expiry)
         result = prob_profit(
@@ -357,6 +391,7 @@ async def get_option_chance(
             days_to_expiry=dte, implied_vol=iv, is_call=is_call,
             risk_free=settings.risk_free_rate,
         )
+        logger.info("rid=%s options-chance symbol=%s done prob_profit=%s prob_itm=%s", _rid(request), sym, result["prob_profit"], result["prob_itm"])
         return OptionChanceResponse(
             symbol=sym,
             contract_symbol=contract_symbol,
@@ -372,6 +407,8 @@ async def get_option_chance(
             breakeven=result["breakeven"],
         )
     except ValueError:
+        logger.debug("rid=%s options symbol=%s invalid OCC → 422", _rid(request), sym)
         raise HTTPException(status_code=422, detail=f"Invalid contract symbol: {contract_symbol}")
     except AlpacaError as e:
+        logger.warning("rid=%s options symbol=%s alpaca_error=%s → 502", _rid(request), sym, e)
         raise HTTPException(status_code=502, detail=str(e))

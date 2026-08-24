@@ -8,8 +8,11 @@ from ..services.cache import cache_get, cache_set, run_coro, strategies_key, CAC
 from ..services.indicator_engine import create_pro_engine
 from ..services.strategy_engine import recommend_strategies, timeframe_for_dte
 from ..config import settings
+from ..logging import get_logger
+from ..middleware.logging import get_request_id as _rid
 
 router = APIRouter(prefix="/options", tags=["strategies"])
+logger = get_logger("strategies")
 
 
 def _card_dict(r: dict) -> dict:
@@ -25,6 +28,7 @@ def _card_dict(r: dict) -> dict:
 @router.get("/{symbol}/strategies", response_model=StrategiesResponse)
 @limiter.limit(f"{settings.rate_limit_free}/minute")
 async def get_strategies(request: Request, symbol: str, sentiment: str = Query('neutral'), strike: float = Query(...), expiration_gte: str = Query(...), expiration_lte: str = Query(...), dte: Optional[float] = Query(None), timeframe: Optional[str] = Query(None)):
+    sym = None
     try:
         sym = validate_symbol(symbol)
         client = AlpacaClient()
@@ -33,10 +37,13 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
         # An explicit `timeframe` overrides the DTE-matched default.
         tf = timeframe or timeframe_for_dte(dte)
         if tf not in ('1h', '1d', '1w', '1mo'):
+            logger.warning("rid=%s strategies symbol=%s unsupported tf=%s → 422", _rid(request), sym, tf)
             raise HTTPException(status_code=422, detail=f"unsupported timeframe: {tf}")
+        logger.info("rid=%s strategies symbol=%s sentiment=%s strike=%s dte=%s tf=%s", _rid(request), sym, sentiment, strike, dte or "-", tf)
         key = strategies_key(sym, strike, expiration_gte, expiration_lte, tf)
         payload = run_coro(cache_get(key))
         if payload is None:
+            logger.info("rid=%s strategies symbol=%s cache=miss", _rid(request), sym)
             # Market-data chain (bid/ask/last/IV/greeks), already cached 15 min
             # server-side — trading metadata has no reliable last_price.
             contracts = client.get_option_chain(
@@ -74,6 +81,7 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
             if not df.empty:
                 indicator_results = [r.to_dict() for r in create_pro_engine().compute_all(df)]
             recs = recommend_strategies(sentiment, strike, chain, indicator_results=indicator_results)
+            logger.debug("rid=%s strategies symbol=%s chain_usable=%d indicators=%d recs=%d", _rid(request), sym, len(chain), len(indicator_results), len(recs))
             payload = {
                 'symbol': sym,
                 'sentiment': sentiment,
@@ -81,6 +89,9 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
                 'strategies': [_card_dict(r) for r in recs],
             }
             run_coro(cache_set(key, payload, ttl=CACHE_TTL_OPTION_CHAIN))
+        else:
+            logger.info("rid=%s strategies symbol=%s cache=hit", _rid(request), sym)
+        logger.info("rid=%s strategies symbol=%s done strategies=%d", _rid(request), sym, len(payload['strategies']))
         return StrategiesResponse(
             symbol=payload['symbol'],
             sentiment=payload['sentiment'],
@@ -96,4 +107,5 @@ async def get_strategies(request: Request, symbol: str, sentiment: str = Query('
             ],
         )
     except AlpacaError as e:
+        logger.warning("rid=%s strategies symbol=%s alpaca_error=%s → 502", _rid(request), sym, e)
         raise HTTPException(status_code=502, detail=str(e))

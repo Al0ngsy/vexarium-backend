@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 
 from datetime import datetime, timezone
-import logging
 
 from starlette.concurrency import run_in_threadpool
 
@@ -32,10 +31,12 @@ from ..services.cache import (
 )
 import asyncio
 from ..config import settings
+from ..logging import get_logger
+from ..middleware.logging import get_request_id as _rid
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
-logger = logging.getLogger("vexarium.api.analysis")
+logger = get_logger("analysis")
 
 
 def _build_response(sym: str, body: AnalysisRequest, df, indicator_results):
@@ -112,17 +113,22 @@ def _build_series_payload(df, indicator_results):
 @router.post("", response_model=AnalysisResponse)
 @limiter.limit(f"{settings.rate_limit_free}/minute")
 async def analyze(request: Request, body: AnalysisRequest):
+    sym = None
     try:
         sym = validate_symbol(body.symbol)
+        logger.info("rid=%s analyze symbol=%s tf=%s", _rid(request), sym, body.timeframe or "1d")
         # Daily bars -> computed indicators only change once per day, so the whole
         # analysis result is cached per symbol per day (cheap repeat lookups).
         key = analysis_key(sym, body.timeframe)
         cached = await cache_get(key)
         if cached is not None:
+            logger.info("rid=%s analyze symbol=%s cache=hit", _rid(request), sym)
             try:
                 return AnalysisResponse.model_validate(cached)
             except Exception:
                 pass
+        else:
+            logger.info("rid=%s analyze symbol=%s cache=miss", _rid(request), sym)
 
         # Single-flight: the page fires up to 3 duplicate 1d POSTs on load
         # (main + quiet recompute + verdict strip). On a cold cache they all
@@ -130,12 +136,14 @@ async def analyze(request: Request, body: AnalysisRequest):
         # request computes; the duplicates wait and read the cached result.
         lock_key = analysis_lock_key(sym, body.timeframe)
         if not await lock_acquire(lock_key, ttl=180):
+            logger.info("rid=%s analyze symbol=%s lock busy — waiting for in-flight analysis", _rid(request), sym)
             waited = 0
             while waited < 120:
                 await asyncio.sleep(2)
                 waited += 2
                 cached = await cache_get(key)
                 if cached is not None:
+                    logger.info("rid=%s analyze symbol=%s got in-flight result after %ds wait", _rid(request), sym, waited)
                     try:
                         return AnalysisResponse.model_validate(cached)
                     except Exception:
@@ -148,26 +156,33 @@ async def analyze(request: Request, body: AnalysisRequest):
                         status_code=503,
                         detail="Analysis in progress, retry in a moment",
                     )
+            logger.info("rid=%s analyze symbol=%s took over after %ds lock wait", _rid(request), sym, waited)
 
         try:
             client = AlpacaClient()
             df = client.get_stock_bars(sym, timeframe=body.timeframe)
             if df.empty:
+                logger.warning("rid=%s analyze symbol=%s no data for tf=%s → 404", _rid(request), sym, body.timeframe or "1d")
                 raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
             # All indicators are free (no more free/pro indicator split).
             engine = create_pro_engine()
             indicator_results = engine.compute_all(df)
             response = _build_response(sym, body, df, indicator_results)
             await cache_set(key, response.model_dump(mode="json"), ttl=CACHE_TTL_ANALYSIS)
+            logger.info(
+                "rid=%s analyze symbol=%s done indicators=%d bars=%d cache=stored",
+                _rid(request), sym, len(indicator_results), len(df),
+            )
             return response
         finally:
             await lock_release(lock_key)
     except AlpacaError as e:
+        logger.warning("rid=%s analyze symbol=%s alpaca_error=%s → 502", _rid(request), sym, e)
         raise HTTPException(status_code=502, detail=str(e))
     except HTTPException:
         raise
     except Exception:
-        logger.error("Analysis failed", exc_info=True)
+        logger.error("rid=%s analyze symbol=%s FAILED", _rid(request), sym, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error")
 
 
@@ -179,13 +194,21 @@ async def finnhub_data(request: Request, symbol: str):
     Each list is empty when the FINNHUB_API_KEY is unset or the symbol has
     no data — widgets degrade gracefully, no error.
     """
+    sym = None
     try:
         sym = validate_symbol(symbol)
-        return get_finnhub_bundle(sym)
+        logger.info("rid=%s finnhub symbol=%s", _rid(request), sym)
+        bundle = get_finnhub_bundle(sym)
+        logger.debug(
+            "rid=%s finnhub symbol=%s insider=%d earnings=%d peers=%d",
+            _rid(request), sym,
+            len(bundle.get("insider") or []), len(bundle.get("earnings") or []), len(bundle.get("peers") or []),
+        )
+        return bundle
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
-        logger.error("Finnhub bundle failed", exc_info=True)
+        logger.error("rid=%s finnhub symbol=%s FAILED", _rid(request), sym, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error")
 
 
@@ -198,14 +221,19 @@ async def market_news(request: Request, limit: int = 6):
     stock-specific feed. Same sentiment scoring as the stock news.
     """
     try:
+        logger.info("rid=%s market-news limit=%d", _rid(request), limit)
         articles = get_market_news(limit=max(1, min(limit, 20)))
         scored = add_article_scores(articles)
+        if not scored:
+            logger.warning("rid=%s market-news empty result", _rid(request))
+        else:
+            logger.info("rid=%s market-news done articles=%d", _rid(request), len(scored))
         return {
             "sentiment": get_news_sentiment(scored),
             "articles": [NewsArticle.from_article(a) for a in scored],
         }
     except Exception:
-        logger.error("Market news failed", exc_info=True)
+        logger.error("rid=%s market-news FAILED", _rid(request), exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error")
 
 
@@ -218,6 +246,10 @@ async def fear_greed(request: Request):
     gauge. {} when the source is unreachable (widget shows unavailable).
     """
     data = await run_in_threadpool(get_fear_greed)
+    if data:
+        logger.info("rid=%s fear-greed ok value=%s", _rid(request), data.get("value") if isinstance(data, dict) else "-")
+    else:
+        logger.warning("rid=%s fear-greed empty → unavailable", _rid(request))
     return data or {}
 
 
@@ -236,11 +268,14 @@ async def bars(
     """
     try:
         sym = validate_symbol(symbol)
+        logger.info("rid=%s bars symbol=%s tf=%s limit=%d", _rid(request), sym, timeframe, limit)
         client = AlpacaClient()
         df = client.get_stock_bars(sym, timeframe=timeframe)
         if df.empty:
             raise HTTPException(status_code=404, detail=f"No data found for symbol: {sym}")
-        return build_price_series(df, limit=limit)
+        series = build_price_series(df, limit=limit)
+        logger.debug("rid=%s bars symbol=%s points=%d bars=%d", _rid(request), sym, len(series), len(df))
+        return series
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except AlpacaError as e:

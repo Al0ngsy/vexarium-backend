@@ -12,8 +12,11 @@ from ..services.quote_stream import (
     quote_stream,
     validate_symbols,
 )
+from ..logging import get_logger
+from ..middleware.logging import get_request_id as _rid
 
 router = APIRouter(prefix="/stream", tags=["stream"])
+logger = get_logger("stream")
 
 
 @router.get("/quotes")
@@ -27,23 +30,29 @@ async def stream_quotes(request: Request, symbols: str = ""):
     try:
         syms = validate_symbols(symbols)
     except ValueError as e:
+        logger.warning("rid=%s quotes invalid symbols=%r → 400", _rid(request), symbols)
         raise HTTPException(status_code=400, detail=str(e))
 
     queue = await quote_stream.subscribe(syms)
+    logger.info("rid=%s quotes SSE opened symbols=%s", _rid(request), ",".join(syms))
 
     async def event_generator():
         try:
             while True:
                 if await request.is_disconnected():
+                    logger.info("rid=%s quotes SSE client disconnected", _rid(request))
                     break
                 try:
                     ev = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECS)
                 except asyncio.TimeoutError:
+                    logger.debug("rid=%s quotes heartbeat", _rid(request))
                     yield ": ping\n\n"
                     continue
+                logger.debug("rid=%s quotes event symbol=%s price=%s", _rid(request), ev.symbol, ev.price)
                 yield f"data: {ev.as_sse()}\n\n"
         finally:
             await quote_stream.unsubscribe(syms, queue)
+            logger.info("rid=%s quotes SSE closed symbols=%s", _rid(request), ",".join(syms))
 
     return StreamingResponse(
         event_generator(),
